@@ -111,6 +111,22 @@ func (s *localFileService) SaveFile(ctx context.Context,
 func (s *localFileService) GetFile(ctx context.Context, filePath string) (io.ReadCloser, error) {
 	logger.Infof(ctx, "Getting file: %s", filePath)
 
+	// A reference path names a file that was never copied into storage, so it
+	// bypasses the base-dir traversal guard and is checked on its own terms.
+	if refPath, ok := secutils.ReferencePath(filePath); ok {
+		validated, err := secutils.ValidateReferencePath(refPath)
+		if err != nil {
+			logger.Errorf(ctx, "Reference path rejected: %s err=%v", refPath, err)
+			return nil, fmt.Errorf("invalid reference path: %w", err)
+		}
+		ref, err := os.Open(validated)
+		if err != nil {
+			logger.Errorf(ctx, "Failed to open reference path: %s err=%v", validated, err)
+			return nil, fmt.Errorf("failed to open reference file: %w", err)
+		}
+		return ref, nil
+	}
+
 	candidate := s.normalizePathForBase(filePath)
 	resolved, err := secutils.SafePathUnderBase(s.baseDir, candidate)
 	if err != nil {
@@ -137,6 +153,12 @@ func (s *localFileService) GetFile(ctx context.Context, filePath string) (io.Rea
 func (s *localFileService) DeleteFile(ctx context.Context, filePath string) error {
 	logger.Infof(ctx, "Deleting file: %s", filePath)
 
+	// Removing a reference entry must never remove the user's file.
+	if _, ok := secutils.ReferencePath(filePath); ok {
+		logger.Infof(ctx, "Skipping delete of reference path: %s", filePath)
+		return nil
+	}
+
 	candidate := s.normalizePathForBase(filePath)
 	resolved, err := secutils.SafePathUnderBase(s.baseDir, candidate)
 	if err != nil {
@@ -161,19 +183,32 @@ func (s *localFileService) DeleteFile(ctx context.Context, filePath string) erro
 func (s *localFileService) CopyFile(ctx context.Context,
 	srcPath string, tenantID uint64, knowledgeID string,
 ) (string, error) {
-	// Only local paths are accepted. A provider scheme other than local://
-	// (e.g. s3://, minio://) means a cross-backend copy, which this service
-	// does not support. Legacy bare/absolute paths have no scheme and pass.
-	if i := strings.Index(srcPath, "://"); i >= 0 && srcPath[:i+3] != localScheme {
-		return "", fmt.Errorf("local file service cannot copy %q: %w", srcPath, ErrCrossBackendCopy)
-	}
+	// A reference source is read where it lives and copied into a
+	// knowledge-owned object, which is exactly what a clone should produce.
+	var srcResolved string
+	if refPath, ok := secutils.ReferencePath(srcPath); ok {
+		validated, err := secutils.ValidateReferencePath(refPath)
+		if err != nil {
+			logger.Errorf(ctx, "Reference source rejected for CopyFile: %v", err)
+			return "", fmt.Errorf("invalid source path: %w", err)
+		}
+		srcResolved = validated
+	} else {
+		// Only local paths are accepted. A provider scheme other than local://
+		// (e.g. s3://, minio://) means a cross-backend copy, which this service
+		// does not support. Legacy bare/absolute paths have no scheme and pass.
+		if i := strings.Index(srcPath, "://"); i >= 0 && srcPath[:i+3] != localScheme {
+			return "", fmt.Errorf("local file service cannot copy %q: %w", srcPath, ErrCrossBackendCopy)
+		}
 
-	// Validate and resolve the source path under baseDir (same guard as GetFile).
-	srcCandidate := s.normalizePathForBase(srcPath)
-	srcResolved, err := secutils.SafePathUnderBase(s.baseDir, srcCandidate)
-	if err != nil {
-		logger.Errorf(ctx, "Path traversal denied for CopyFile src: %v", err)
-		return "", fmt.Errorf("invalid source path: %w", err)
+		// Validate and resolve the source path under baseDir (same guard as GetFile).
+		srcCandidate := s.normalizePathForBase(srcPath)
+		resolved, err := secutils.SafePathUnderBase(s.baseDir, srcCandidate)
+		if err != nil {
+			logger.Errorf(ctx, "Path traversal denied for CopyFile src: %v", err)
+			return "", fmt.Errorf("invalid source path: %w", err)
+		}
+		srcResolved = resolved
 	}
 
 	// Build destination path with the knowledge-owned layout.
@@ -252,6 +287,12 @@ func (s *localFileService) SaveBytes(ctx context.Context, data []byte, tenantID 
 // When externalURL is configured, returns a presigned HTTP URL suitable for external access.
 // Otherwise returns the local://... path for backward compatibility.
 func (s *localFileService) GetFileURL(ctx context.Context, filePath string) (string, error) {
+	// A reference path is only readable by the process that owns the file, so
+	// no presigned URL can represent it; hand the path back unchanged.
+	if _, ok := secutils.ReferencePath(filePath); ok {
+		return filePath, nil
+	}
+
 	// Normalize to provider:// format.
 	normalized := filePath
 	if !strings.HasPrefix(filePath, localScheme) {

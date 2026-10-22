@@ -508,6 +508,30 @@ func (r *knowledgeRepository) CheckKnowledgeExists(
 	return false, nil, nil
 }
 
+// GetKnowledgeByFilePath returns the live row in a KB whose stored file path
+// matches exactly, or nil when none exists. Reference-ingested documents are
+// keyed by their path, so a repeated registration returns the same row instead
+// of parsing the file twice.
+func (r *knowledgeRepository) GetKnowledgeByFilePath(
+	ctx context.Context,
+	tenantID uint64,
+	kbID string,
+	filePath string,
+) (*types.Knowledge, error) {
+	var knowledge types.Knowledge
+	err := r.db.WithContext(ctx).
+		Where("tenant_id = ? AND knowledge_base_id = ? AND file_path = ? AND parse_status <> ?",
+			tenantID, kbID, filePath, "deleting").
+		First(&knowledge).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &knowledge, nil
+}
+
 // AminusB returns the IDs of knowledge in A that have no counterpart in B,
 // comparing by file_hash as a MULTISET rather than a plain set.
 //

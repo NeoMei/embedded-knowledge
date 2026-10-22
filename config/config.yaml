@@ -1,7 +1,9 @@
 # Server configuration
+# SuperWagie patch: loopback only, on SuperWagie's own port, so a local
+# WeKnora install on 8080 is never adopted or collided with.
 server:
-  port: 8080
-  host: "0.0.0.0"
+  port: 17808
+  host: "127.0.0.1"
 
 # Conversation service configuration
 # NOTE: Prompt content is resolved from prompt_templates/ YAML files via xxx_id fields.

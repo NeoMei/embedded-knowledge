@@ -24,6 +24,20 @@ type KnowledgeService interface {
 		channel string,
 		processOverrides *types.KnowledgeProcessOverrides,
 	) (*types.Knowledge, error)
+	// CreateKnowledgeFromPath creates knowledge for a file at an absolute local
+	// path without copying it into storage. It is idempotent per path: calling
+	// it twice returns the same record without re-parsing.
+	CreateKnowledgeFromPath(
+		ctx context.Context,
+		kbID string,
+		path string,
+		title string,
+		folderPath string,
+		metadata map[string]string,
+		tagIDs []string,
+		channel string,
+		processOverrides *types.KnowledgeProcessOverrides,
+	) (*types.Knowledge, error)
 	// CreateKnowledgeFromURL creates knowledge from a URL.
 	// When fileName or fileType is provided (or the URL path has a known file extension),
 	// the URL is treated as a direct file download instead of a web page crawl.
@@ -277,6 +291,10 @@ type KnowledgeRepository interface {
 		kbID string,
 		params *types.KnowledgeCheckParams,
 	) (bool, *types.Knowledge, error)
+	// GetKnowledgeByFilePath returns the live knowledge row in a KB whose stored
+	// file path matches exactly. Reference-ingested documents key on their path,
+	// so this is what makes registering the same path idempotent.
+	GetKnowledgeByFilePath(ctx context.Context, tenantID uint64, kbID string, filePath string) (*types.Knowledge, error)
 	// ListKnowledgeFolderCounts aggregates the number of knowledge entries
 	// stored directly in each folder_path of a knowledge base.
 	ListKnowledgeFolderCounts(
