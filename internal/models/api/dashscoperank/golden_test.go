@@ -113,3 +113,25 @@ func TestPostsToTheBaseURLItself(t *testing.T) {
 	assert.Equal(t, "/api/v1/services/rerank/text-rerank/text-rerank", gotPath,
 		"the vendor's base URL already names the full endpoint")
 }
+
+func TestRejectsAmbiguousRerankResults(t *testing.T) {
+	t.Setenv("SSRF_WHITELIST", "127.0.0.1")
+	cases := map[string]string{
+		"duplicate index": `{"output":{"results":[{"index":0,"relevance_score":0.9},{"index":0,"relevance_score":0.3}]}}`,
+		"missing index":   `{"output":{"results":[{"relevance_score":0.9}]}}`,
+		"null index":      `{"output":{"results":[{"index":null,"relevance_score":0.9}]}}`,
+		"missing score":   `{"output":{"results":[{"index":0}]}}`,
+		"null score":      `{"output":{"results":[{"index":0,"relevance_score":null}]}}`,
+		"score above one": `{"output":{"results":[{"index":0,"relevance_score":1.1}]}}`,
+		"negative score":  `{"output":{"results":[{"index":0,"relevance_score":-0.1}]}}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) }))
+			defer server.Close()
+			got, err := newClient(t, server.URL, api.RerankSettings{}).Rerank(context.Background(), "q", []string{"first", "second"})
+			require.Error(t, err)
+			assert.Nil(t, got)
+		})
+	}
+}
