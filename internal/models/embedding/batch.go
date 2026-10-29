@@ -46,7 +46,10 @@ func (e *batchEmbedder) BatchEmbedWithPool(ctx context.Context, model Embedder, 
 		return func() {
 			defer wg.Done()
 			// If an error has already occurred, don't continue processing
-			if firstErr != nil {
+			mu.Lock()
+			failed := firstErr != nil
+			mu.Unlock()
+			if failed {
 				return
 			}
 			// Embed text
@@ -81,16 +84,24 @@ func (e *batchEmbedder) BatchEmbedWithPool(ctx context.Context, model Embedder, 
 	}
 
 	// Submit all tasks to the goroutine pool
+	var submitErr error
 	for _, texts := range utils.ChunkSlice(textEmbeddings, batchSize) {
 		wg.Add(1)
-		err := e.pool.Submit(processChunk(texts))
-		if err != nil {
-			return nil, err
+		if err := e.pool.Submit(processChunk(texts)); err != nil {
+			// This job was not accepted and will never call Done. Drain every
+			// accepted job before reporting the submission failure.
+			wg.Done()
+			submitErr = err
+			break
 		}
 	}
 
 	// Wait for all tasks to complete
 	wg.Wait()
+
+	if submitErr != nil {
+		return nil, submitErr
+	}
 
 	// Check if any errors occurred
 	if firstErr != nil {
