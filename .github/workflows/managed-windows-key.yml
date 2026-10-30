@@ -6,6 +6,7 @@ on:
     paths:
       - internal/application/service/managed_key_file_*.go
       - scripts/test-managed-key-windows.ps1
+      - scripts/diagnose-managed-key-windows.mjs
       - scripts/fixtures/managed-key-storage.mjs
       - .github/workflows/managed-windows-key.yml
   workflow_dispatch:
@@ -31,6 +32,9 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
+      - name: Fixed-phase normal helper diagnostic
+        shell: pwsh
+        run: node scripts/diagnose-managed-key-windows.mjs
       - name: Native baseline RED and current reader GREEN
         id: native
         shell: pwsh
