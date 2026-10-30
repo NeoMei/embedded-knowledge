@@ -11,6 +11,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 var ErrKnowledgeNotFound = errors.New("knowledge not found")
@@ -231,7 +232,7 @@ func (r *knowledgeRepository) ListPagedKnowledgeByKnowledgeBaseID(
 
 	scope := func(q *gorm.DB) *gorm.DB {
 		return applyKnowledgeListFilter(
-			q.Where("tenant_id = ? AND knowledge_base_id = ?", tenantID, kbID),
+			q.Where("tenant_id = ? AND knowledge_base_id = ?", tenantID, kbID).Where("managed_work_id = ?", ""),
 			filter,
 		)
 	}
@@ -267,6 +268,7 @@ func (r *knowledgeRepository) ListKnowledgeFolderCounts(
 		Select("folder_path AS folder_path, COUNT(*) AS count").
 		Where("tenant_id = ? AND knowledge_base_id = ? AND parse_status <> ?",
 			tenantID, kbID, types.ParseStatusDeleting).
+		Where("managed_work_id = ?", "").
 		Group("folder_path").
 		Find(&counts).Error; err != nil {
 		return nil, err
@@ -312,30 +314,28 @@ func (r *knowledgeRepository) RenameKnowledgeFolderPath(
 		return 0, errors.New("source folder path is required")
 	}
 
-	// The rewrite is done row by row rather than with SQL string functions so it
-	// behaves identically on PostgreSQL and SQLite.
-	var rows []*types.Knowledge
-	if err := r.db.WithContext(ctx).
-		Select("id", "folder_path").
-		Where("tenant_id = ? AND knowledge_base_id = ? AND (folder_path = ? OR folder_path LIKE ? ESCAPE ?)",
-			tenantID, kbID, from, escapeLikeKeyword(from)+"/%", likeEscapeChar).
-		Find(&rows).Error; err != nil {
-		return 0, err
-	}
-	if len(rows) == 0 {
-		return 0, nil
-	}
-
-	// Group by destination so each distinct rewrite is a single UPDATE.
-	byTarget := map[string][]string{}
-	for _, row := range rows {
-		suffix := strings.TrimPrefix(row.FolderPath, from)
-		byTarget[types.NormalizeKnowledgeFolderPath(to+suffix)] = append(
-			byTarget[types.NormalizeKnowledgeFolderPath(to+suffix)], row.ID)
-	}
-
+	// Reference registration and KB deletion take the same KB row lock.
+	// Read managed status and update under that lock as a single operation.
 	var affected int64
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockActiveKnowledgeBase(tx, tenantID, kbID); err != nil {
+			return err
+		}
+		var rows []*types.Knowledge
+		if err := tx.Select("id", "folder_path", "managed_work_id").
+			Where("tenant_id = ? AND knowledge_base_id = ? AND (folder_path = ? OR folder_path LIKE ? ESCAPE ?)",
+				tenantID, kbID, from, escapeLikeKeyword(from)+"/%", likeEscapeChar).Find(&rows).Error; err != nil {
+			return err
+		}
+		byTarget := map[string][]string{}
+		for _, row := range rows {
+			if row.ManagedWorkID != "" {
+				return errors.New("managed knowledge folder is unavailable")
+			}
+			suffix := strings.TrimPrefix(row.FolderPath, from)
+			target := types.NormalizeKnowledgeFolderPath(to + suffix)
+			byTarget[target] = append(byTarget[target], row.ID)
+		}
 		for target, targetIDs := range byTarget {
 			result := tx.Model(&types.Knowledge{}).
 				Where("tenant_id = ? AND knowledge_base_id = ? AND id IN (?)", tenantID, kbID, targetIDs).
@@ -350,17 +350,18 @@ func (r *knowledgeRepository) RenameKnowledgeFolderPath(
 	if err != nil {
 		return 0, err
 	}
+
 	return affected, nil
 }
 
 // UpdateKnowledge updates knowledge
 func (r *knowledgeRepository) UpdateKnowledge(ctx context.Context, knowledge *types.Knowledge) error {
 	knowledge.ErrorMessage = common.CleanInvalidUTF8(knowledge.ErrorMessage)
-	omit := omitFieldsOnUpdate
+	omit := append(append([]string{}, omitFieldsOnUpdate...), "managed_work_id")
 	// Legacy/unit-test schemas created before custom_metadata should continue
 	// to support unrelated updates when the caller did not provide the field.
 	if knowledge.CustomMetadata == nil {
-		omit = append(append([]string{}, omitFieldsOnUpdate...), "custom_metadata")
+		omit = append(omit, "custom_metadata")
 	}
 	err := r.db.WithContext(ctx).Omit(omit...).Save(knowledge).Error
 	return err
@@ -376,7 +377,8 @@ func (r *knowledgeRepository) UpdateKnowledgeBatch(ctx context.Context, knowledg
 			knowledge.ErrorMessage = common.CleanInvalidUTF8(knowledge.ErrorMessage)
 		}
 	}
-	return r.db.Debug().WithContext(ctx).Omit(omitFieldsOnUpdate...).Save(knowledgeList).Error
+	omit := append(append([]string{}, omitFieldsOnUpdate...), "managed_work_id")
+	return r.db.Debug().WithContext(ctx).Omit(omit...).Save(knowledgeList).Error
 }
 
 // DeleteKnowledge deletes knowledge
@@ -519,7 +521,9 @@ func (r *knowledgeRepository) GetKnowledgeByFilePath(
 	filePath string,
 ) (*types.Knowledge, error) {
 	var knowledge types.Knowledge
-	err := r.db.WithContext(ctx).
+	// File paths can contain sensitive user information; GORM interpolates
+	// query arguments in debug and error logs, including record-not-found.
+	err := r.db.WithContext(ctx).Session(&gorm.Session{Logger: r.db.Logger.LogMode(gormlogger.Silent)}).
 		Where("tenant_id = ? AND knowledge_base_id = ? AND file_path = ? AND parse_status <> ?",
 			tenantID, kbID, filePath, "deleting").
 		First(&knowledge).Error
@@ -618,6 +622,9 @@ func (r *knowledgeRepository) UpdateKnowledgeColumn(
 	column string,
 	value interface{},
 ) error {
+	if strings.EqualFold(column, "managed_work_id") || strings.EqualFold(column, "ManagedWorkID") {
+		return errors.New("managed work binding is immutable")
+	}
 	if column == "error_message" {
 		switch v := value.(type) {
 		case string:
@@ -641,6 +648,11 @@ func (r *knowledgeRepository) UpdateKnowledgeColumns(
 ) error {
 	if len(values) == 0 {
 		return nil
+	}
+	for column := range values {
+		if strings.EqualFold(column, "managed_work_id") || strings.EqualFold(column, "ManagedWorkID") {
+			return errors.New("managed work binding is immutable")
+		}
 	}
 	if value, ok := values["error_message"]; ok {
 		switch v := value.(type) {

@@ -2,6 +2,7 @@ package rerank
 
 import (
 	"context"
+	"github.com/Tencent/WeKnora/internal/models/api"
 
 	"github.com/Tencent/WeKnora/internal/tracing/langfuse"
 )
@@ -27,6 +28,9 @@ func (l *langfuseReranker) GetModelID() string   { return l.inner.GetModelID() }
 func (l *langfuseReranker) MaxPassageRunes(query string) int { return MaxPassageRunes(l.inner, query) }
 
 func (l *langfuseReranker) Rerank(ctx context.Context, query string, documents []string) ([]RankResult, error) {
+	if api.ManagedJSONActive(ctx) {
+		return l.inner.Rerank(ctx, query, documents)
+	}
 	mgr := langfuse.GetManager()
 	if !mgr.Enabled() {
 		return l.inner.Rerank(ctx, query, documents)

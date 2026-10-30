@@ -80,6 +80,7 @@ func TestProcessKBDeleteCleansWikiData(t *testing.T) {
 	const tenantID uint64 = 1
 	wikiRepo := &recordingWikiRepo{}
 	svc := &knowledgeBaseService{
+		repo: kbDeleteStatusRepo{deleted: true},
 		kgRepo: populatedKBKnowledgeRepo{items: []*types.Knowledge{
 			{ID: "k1", KnowledgeBaseID: kbID, EmbeddingModelID: "m1"},
 		}},
@@ -107,6 +108,7 @@ func TestProcessKBDeleteWikiCleanupFailureRetries(t *testing.T) {
 		issuesErr:    errors.New("issues boom"),
 	}
 	svc := &knowledgeBaseService{
+		repo: kbDeleteStatusRepo{deleted: true},
 		kgRepo: populatedKBKnowledgeRepo{items: []*types.Knowledge{
 			{ID: "k1", KnowledgeBaseID: kbID, EmbeddingModelID: "m1"},
 		}},
@@ -131,6 +133,7 @@ func TestProcessKBDeleteWikiCleanupFailureRetries(t *testing.T) {
 // wikiRepo must not panic on the cleanup path.
 func TestProcessKBDeleteWikiCleanupNilRepoSafe(t *testing.T) {
 	svc := &knowledgeBaseService{
+		repo: kbDeleteStatusRepo{deleted: true},
 		kgRepo: populatedKBKnowledgeRepo{items: []*types.Knowledge{
 			{ID: "k1", KnowledgeBaseID: "kb-nil", EmbeddingModelID: "m1"},
 		}},
@@ -153,6 +156,7 @@ func TestProcessKBDeleteEmptyKBStillCleansWiki(t *testing.T) {
 	const tenantID uint64 = 1
 	wikiRepo := &recordingWikiRepo{}
 	svc := &knowledgeBaseService{
+		repo:            kbDeleteStatusRepo{deleted: true},
 		kgRepo:          emptyKBKnowledgeRepo{},
 		taskInspector:   &recordingKBTaskInspector{},
 		taskPendingRepo: &recordingKBPendingRepo{},
@@ -172,6 +176,7 @@ func TestProcessKBDeleteWikiCleanupIdempotent(t *testing.T) {
 	const tenantID uint64 = 1
 	wikiRepo := &recordingWikiRepo{}
 	svc := &knowledgeBaseService{
+		repo:            kbDeleteStatusRepo{deleted: true},
 		kgRepo:          emptyKBKnowledgeRepo{},
 		taskInspector:   &recordingKBTaskInspector{},
 		taskPendingRepo: &recordingKBPendingRepo{},
@@ -202,6 +207,7 @@ func TestProcessKBDeleteCleansWikiWhenVectorStoreForbidden(t *testing.T) {
 		{ID: "k1", KnowledgeBaseID: kbID, EmbeddingModelID: "m1"},
 	}}}
 	svc := &knowledgeBaseService{
+		repo:          kbDeleteStatusRepo{deleted: true},
 		kgRepo:        repo,
 		chunkRepo:     kbCleanupChunkRepo{},
 		modelService:  kbCleanupModelService{},
@@ -231,6 +237,7 @@ func TestProcessKBDeleteCleansWikiWhenVectorStoreUnavailable(t *testing.T) {
 	storeIDPtr := storeID
 	wikiRepo := &recordingWikiRepo{}
 	svc := &knowledgeBaseService{
+		repo: kbDeleteStatusRepo{deleted: true},
 		kgRepo: populatedKBKnowledgeRepo{items: []*types.Knowledge{
 			{ID: "k1", KnowledgeBaseID: kbID, EmbeddingModelID: "m1"},
 		}},

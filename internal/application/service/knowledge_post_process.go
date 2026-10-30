@@ -167,6 +167,28 @@ func (s *KnowledgePostProcessService) Handle(ctx context.Context, task *asynq.Ta
 		return nil
 	}
 
+	// Managed pilot authority covers indexing only. Existing KB settings cannot
+	// authorize async enrichment, including a replay of an older Wiki trigger.
+	if knowledge.ManagedWorkID != "" {
+		if knowledge.ParseStatus == types.ParseStatusProcessing {
+			completed, err := s.knowledgeRepo.CompleteProcessingWithoutSubtasks(ctx, payload.KnowledgeID)
+			if err != nil {
+				s.tracker().FailSpan(ctx, postSpan, "MANAGED_COMPLETION_FAILED", err.Error(), err)
+				return fmt.Errorf("complete managed knowledge: %w", err)
+			}
+			if !completed {
+				return ErrManagedWorkerUnavailable
+			}
+		} else if knowledge.ParseStatus == types.ParseStatusFinalizing {
+			// An earlier fan-out may have committed; never replay or claim success.
+			return ErrManagedWorkerUnavailable
+		}
+		output := types.JSONMap{"skipped": "managed_enrichment_not_authorized"}
+		s.tracker().EndSpan(ctx, postSpan, output)
+		s.tracker().FinalizeAttempt(ctx, payload.KnowledgeID, attempt, types.SpanStatusDone, output, "", "")
+		return nil
+	}
+
 	processOverrides, _ := knowledge.ProcessOverrides()
 	eff := ResolveProcessConfig(kb, processOverrides)
 

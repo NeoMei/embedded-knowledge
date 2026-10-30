@@ -135,3 +135,16 @@ func TestRejectsAmbiguousRerankResults(t *testing.T) {
 		})
 	}
 }
+
+func TestManagedRerankSuppressesReturnedDocuments(t *testing.T) {
+	var captured map[string]any
+	client := New(Config{Endpoint: api.Endpoint{Model: "qwen3-rerank", URL: "https://fixture.invalid/rerank"}, Settings: api.RerankSettings{SendReturnDocs: true}})
+	ctx := api.WithManagedJSON(context.Background(), func(_ context.Context, _ string, _ string, body []byte) ([]byte, error) {
+		require.NoError(t, json.Unmarshal(body, &captured))
+		return []byte(`{"output":{"results":[{"index":0,"relevance_score":0.9}]}}`), nil
+	})
+	_, err := client.Rerank(ctx, "query", []string{"doc"})
+	require.NoError(t, err)
+	parameters := captured["parameters"].(map[string]any)
+	require.Equal(t, false, parameters["return_documents"])
+}

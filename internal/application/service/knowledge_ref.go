@@ -14,6 +14,7 @@ import (
 
 	werrors "github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/managedcapability"
 	"github.com/Tencent/WeKnora/internal/tracing/langfuse"
 	"github.com/Tencent/WeKnora/internal/types"
 	secutils "github.com/Tencent/WeKnora/internal/utils"
@@ -38,11 +39,15 @@ func (s *knowledgeService) CreateKnowledgeFromPath(
 	channel string,
 	processOverrides *types.KnowledgeProcessOverrides,
 ) (*types.Knowledge, error) {
-	logger.Infof(ctx, "Start creating knowledge from path: %s", path)
+	logReferencePath(ctx, path, "")
 
 	absPath, err := secutils.ValidateReferencePath(path)
 	if err != nil {
-		logger.Errorf(ctx, "Invalid reference path: %v", err)
+		if _, managed := ctx.Value(managedReferenceKey{}).(managedcapability.Binding); managed {
+			logger.Error(ctx, "Invalid managed reference path")
+		} else {
+			logger.Errorf(ctx, "Invalid reference path: %v", err)
+		}
 		return nil, werrors.NewBadRequestError("无效的文件路径").WithDetails(err.Error())
 	}
 	info, err := os.Stat(absPath)
@@ -100,6 +105,10 @@ func (s *knowledgeService) CreateKnowledgeFromPath(
 		return nil, err
 	}
 	if existing != nil {
+		binding, managed := ctx.Value(managedReferenceKey{}).(managedcapability.Binding)
+		if (managed && (existing.ID != binding.KnowledgeID || existing.ManagedWorkID != binding.WorkID)) || (!managed && existing.ManagedWorkID != "") {
+			return nil, ErrManagedWorkerUnavailable
+		}
 		logger.Infof(ctx, "Reference already registered, knowledge ID: %s", existing.ID)
 		return existing, nil
 	}
@@ -143,14 +152,28 @@ func (s *knowledgeService) CreateKnowledgeFromPath(
 		EmbeddingModelID: kb.EmbeddingModelID,
 		Metadata:         metadataJSON,
 	}
+	if binding, managed := ctx.Value(managedReferenceKey{}).(managedcapability.Binding); managed {
+		knowledge.ID = binding.KnowledgeID
+		knowledge.ManagedWorkID = binding.WorkID
+	}
 	if processOverrides != nil {
 		if err := knowledge.SetProcessOverrides(processOverrides); err != nil {
 			return nil, err
 		}
 	}
 
-	if err := s.repo.CreateKnowledge(ctx, knowledge); err != nil {
+	atomic, ok := s.repo.(interface {
+		CreateReferenceLocked(context.Context, *types.Knowledge) (*types.Knowledge, bool, error)
+	})
+	if !ok {
+		return nil, ErrManagedWorkerUnavailable
+	}
+	knowledge, created, err := atomic.CreateReferenceLocked(ctx, knowledge)
+	if err != nil {
 		return nil, err
+	}
+	if !created {
+		return knowledge, nil
 	}
 	if err := s.setAndAttachKnowledgeTags(ctx, tenantID, kbID, knowledge, tagIDs); err != nil {
 		return nil, err
@@ -163,6 +186,7 @@ func (s *knowledgeService) CreateKnowledgeFromPath(
 	}
 
 	payload := types.DocumentProcessPayload{
+		ManagedWorkID:            knowledge.ManagedWorkID,
 		TenantID:                 tenantID,
 		KnowledgeID:              knowledge.ID,
 		KnowledgeBaseID:          kbID,
@@ -196,7 +220,7 @@ func (s *knowledgeService) CreateKnowledgeFromPath(
 			"title": knowledge.Title, "source_type": "file", "file_type": knowledge.FileType,
 			"processing_status": "pending", "trigger": kbActivityTrigger(ctx), "ingest": "reference",
 		})
-	logger.Infof(ctx, "Knowledge from path created, ID: %s, path: %s", knowledge.ID, absPath)
+	logReferencePath(ctx, absPath, knowledge.ID)
 	return knowledge, nil
 }
 
@@ -215,4 +239,20 @@ func hashFileAtPath(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func logReferencePath(ctx context.Context, path, knowledgeID string) {
+	if _, managed := ctx.Value(managedReferenceKey{}).(managedcapability.Binding); managed {
+		if knowledgeID == "" {
+			logger.Info(ctx, "Start creating managed knowledge from reference")
+		} else {
+			logger.Infof(ctx, "Managed knowledge from reference created, ID: %s", knowledgeID)
+		}
+		return
+	}
+	if knowledgeID == "" {
+		logger.Infof(ctx, "Start creating knowledge from path: %s", path)
+	} else {
+		logger.Infof(ctx, "Knowledge from path created, ID: %s, path: %s", knowledgeID, path)
+	}
 }

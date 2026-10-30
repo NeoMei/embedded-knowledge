@@ -24,6 +24,7 @@ import (
 const knowledgesTestDDL = `
 CREATE TABLE IF NOT EXISTS knowledges (
     profile TEXT,
+    managed_work_id VARCHAR(200) NOT NULL DEFAULT '',
     id VARCHAR(36) PRIMARY KEY,
     tenant_id INTEGER NOT NULL,
     knowledge_base_id VARCHAR(36) NOT NULL,

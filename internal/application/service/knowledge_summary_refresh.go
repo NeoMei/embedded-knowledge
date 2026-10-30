@@ -88,6 +88,9 @@ func enqueueSummaryRefresh(
 	tracker SpanTracker,
 	knowledge *types.Knowledge,
 ) error {
+	if knowledge != nil && knowledge.ManagedWorkID != "" {
+		return ErrManagedWorkerUnavailable
+	}
 	if knowledge == nil || knowledge.SummaryStatus == "" || knowledge.SummaryStatus == types.SummaryStatusNone {
 		return nil
 	}

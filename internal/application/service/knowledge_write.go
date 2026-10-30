@@ -74,6 +74,9 @@ func loadKnowledgeWrite(
 	if knowledge == nil || knowledge.ID != id || knowledge.TenantID != tenant {
 		return nil, nil, apperrors.NewNotFoundError("knowledge not found")
 	}
+	if knowledge.ManagedWorkID != "" {
+		return nil, nil, ErrManagedWorkerUnavailable
+	}
 	if err := access.RejectMovingKnowledge(knowledge); err != nil {
 		return nil, nil, err
 	}
@@ -120,6 +123,9 @@ func loadKnowledgeWriteBatch(
 		row := byID[id]
 		if row == nil {
 			return nil, apperrors.NewNotFoundError("knowledge not found")
+		}
+		if row.ManagedWorkID != "" {
+			return nil, ErrManagedWorkerUnavailable
 		}
 		if err := access.RejectMovingKnowledge(row); err != nil {
 			return nil, err

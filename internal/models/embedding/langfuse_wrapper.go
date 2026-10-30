@@ -3,6 +3,7 @@ package embedding
 import (
 	"context"
 
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/tracing/langfuse"
 )
 
@@ -15,6 +16,9 @@ type langfuseEmbedder struct {
 }
 
 func (l *langfuseEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
+	if api.ManagedJSONActive(ctx) {
+		return l.inner.Embed(ctx, text)
+	}
 	mgr := langfuse.GetManager()
 	if !mgr.Enabled() {
 		return l.inner.Embed(ctx, text)
@@ -42,6 +46,9 @@ func (l *langfuseEmbedder) Embed(ctx context.Context, text string) ([]float32, e
 }
 
 func (l *langfuseEmbedder) BatchEmbed(ctx context.Context, texts []string) ([][]float32, error) {
+	if api.ManagedJSONActive(ctx) {
+		return l.inner.BatchEmbed(ctx, texts)
+	}
 	mgr := langfuse.GetManager()
 	if !mgr.Enabled() {
 		return l.inner.BatchEmbed(ctx, texts)
@@ -89,6 +96,9 @@ func (l *langfuseEmbedder) BatchEmbedImages(ctx context.Context, images []Image)
 	inner, err := imageSide(l.inner)
 	if err != nil {
 		return nil, err
+	}
+	if api.ManagedJSONActive(ctx) {
+		return inner.BatchEmbedImages(ctx, images)
 	}
 	mgr := langfuse.GetManager()
 	if !mgr.Enabled() {

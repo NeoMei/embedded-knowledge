@@ -303,6 +303,25 @@ func (s *ChunkExtractService) Handle(ctx context.Context, t *asynq.Task) error {
 		handleErr = err
 		return err
 	}
+	// Resolve ownership from the chunk, not the optional legacy task payload.
+	// A missing or unreadable knowledge row is not authority to call a model.
+	if chunk == nil || chunk.KnowledgeID == "" || s.knowledgeRepo == nil {
+		handleErr = ErrManagedWorkerUnavailable
+		return handleErr
+	}
+	owner, ownerErr := s.knowledgeRepo.GetKnowledgeByID(ctx, p.TenantID, chunk.KnowledgeID)
+	if ownerErr != nil {
+		handleErr = ownerErr
+		return ownerErr
+	}
+	if owner == nil || owner.TenantID != p.TenantID || owner.KnowledgeBaseID != chunk.KnowledgeBaseID || (p.KnowledgeID != "" && p.KnowledgeID != owner.ID) {
+		handleErr = ErrManagedWorkerUnavailable
+		return handleErr
+	}
+	if owner.ManagedWorkID != "" {
+		graphOut["skipped"] = "managed_enrichment_not_authorized"
+		return nil
+	}
 	// Capture chunk content shape on output — lets traces answer "WHAT
 	// did the LLM call see?" without joining back to the chunk store.
 	// Preview is truncated to keep span rows reasonable.
@@ -317,16 +336,7 @@ func (s *ChunkExtractService) Handle(ctx context.Context, t *asynq.Task) error {
 		return err
 	}
 
-	var processOverrides *types.KnowledgeProcessOverrides
-	knowledgeID := p.KnowledgeID
-	if knowledgeID == "" {
-		knowledgeID = chunk.KnowledgeID
-	}
-	if knowledgeID != "" && s.knowledgeRepo != nil {
-		if k, kerr := s.knowledgeRepo.GetKnowledgeByIDOnly(ctx, knowledgeID); kerr == nil && k != nil {
-			processOverrides, _ = k.ProcessOverrides()
-		}
-	}
+	processOverrides, _ := owner.ProcessOverrides()
 	extractCfg := ResolveProcessConfig(kb, processOverrides).ExtractConfig
 	if !extractCfg.Enabled {
 		logger.Warnf(ctx, "extract config not enabled")

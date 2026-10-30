@@ -22,6 +22,7 @@ import (
 	secutils "github.com/Tencent/WeKnora/internal/utils"
 	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
+	"gorm.io/gorm"
 )
 
 // ErrInvalidTenantID represents an error for invalid tenant ID
@@ -31,6 +32,7 @@ const kbTaskCleanupTimeout = 5 * time.Second
 
 // knowledgeBaseService implements the knowledge base service interface
 type knowledgeBaseService struct {
+	managedWorker   *pilotManagedWorker
 	repo            interfaces.KnowledgeBaseRepository
 	kgRepo          interfaces.KnowledgeRepository
 	chunkRepo       interfaces.ChunkRepository
@@ -55,7 +57,7 @@ type knowledgeBaseService struct {
 }
 
 // NewKnowledgeBaseService creates a new knowledge base service
-func NewKnowledgeBaseService(repo interfaces.KnowledgeBaseRepository,
+func NewKnowledgeBaseService(db *gorm.DB, repo interfaces.KnowledgeBaseRepository,
 	kgRepo interfaces.KnowledgeRepository,
 	chunkRepo interfaces.ChunkRepository,
 	shareRepo interfaces.KBShareRepository,
@@ -76,8 +78,13 @@ func NewKnowledgeBaseService(repo interfaces.KnowledgeBaseRepository,
 	audit interfaces.AuditLogService,
 	resourceCatalog interfaces.ResourceCatalog,
 	wikiRepo interfaces.WikiPageRepository,
-) interfaces.KnowledgeBaseService {
+) (interfaces.KnowledgeBaseService, error) {
+	managed, err := pilotWorkerFromEnvironment(db)
+	if err != nil {
+		return nil, err
+	}
 	return &knowledgeBaseService{
+		managedWorker:   managed,
 		repo:            repo,
 		kgRepo:          kgRepo,
 		chunkRepo:       chunkRepo,
@@ -99,7 +106,7 @@ func NewKnowledgeBaseService(repo interfaces.KnowledgeBaseRepository,
 		audit:           audit,
 		resourceCatalog: resourceCatalog,
 		wikiRepo:        wikiRepo,
-	}
+	}, nil
 }
 
 // GetRepository gets the knowledge base repository
@@ -820,6 +827,20 @@ func (s *knowledgeBaseService) DeleteKnowledgeBase(ctx context.Context, id strin
 		})
 		return err
 	}
+	// A KB-wide delete has no managed work authority. Fail before changing the
+	// KB or cancelling any tasks when any persisted document is managed.
+	if s.kgRepo == nil {
+		return ErrManagedWorkerUnavailable
+	}
+	knowledgeList, err := s.kgRepo.ListKnowledgeByKnowledgeBaseID(ctx, tenantID, id)
+	if err != nil {
+		return err
+	}
+	for _, knowledge := range knowledgeList {
+		if knowledge == nil || knowledge.ManagedWorkID != "" {
+			return ErrManagedWorkerUnavailable
+		}
+	}
 	var vectorStoreIDSnapshot *string
 	if kb != nil {
 		vectorStoreIDSnapshot = kb.VectorStoreID
@@ -827,7 +848,13 @@ func (s *knowledgeBaseService) DeleteKnowledgeBase(ctx context.Context, id strin
 
 	// Step 1: Delete the knowledge base record first (mark as deleted)
 	logger.Infof(ctx, "Deleting knowledge base from database")
-	err = s.repo.DeleteKnowledgeBase(ctx, id)
+	atomic, ok := s.repo.(interface {
+		DeleteWithoutManaged(context.Context, uint64, string) error
+	})
+	if !ok {
+		return ErrManagedWorkerUnavailable
+	}
+	err = atomic.DeleteWithoutManaged(ctx, tenantID, id)
 	if err != nil {
 		logger.ErrorWithFields(ctx, err, map[string]interface{}{
 			"knowledge_base_id": id,
@@ -919,6 +946,35 @@ func (s *knowledgeBaseService) ProcessKBDelete(ctx context.Context, t *asynq.Tas
 
 	// Set tenant context for downstream services
 	ctx = context.WithValue(ctx, types.TenantIDContextKey, tenantID)
+	// Old or forged cleanup jobs may not erase a still-active KB. After a
+	// committed tombstone, the shared registration lock rejects new rows.
+	status, ok := s.repo.(interface {
+		IsSoftDeleted(context.Context, uint64, string) (bool, error)
+	})
+	if !ok {
+		return ErrManagedWorkerUnavailable
+	}
+	deleted, statusErr := status.IsSoftDeleted(ctx, tenantID, kbID)
+	if statusErr != nil {
+		return statusErr
+	}
+	if !deleted {
+		return ErrManagedWorkerUnavailable
+	}
+	// Guard even previously queued deletions before installing the cleanup
+	// defer, which itself deletes Wiki state and cancels tasks on every return.
+	if s.kgRepo == nil {
+		return ErrManagedWorkerUnavailable
+	}
+	knowledgeList, err := s.kgRepo.ListKnowledgeByKnowledgeBaseID(ctx, tenantID, kbID)
+	if err != nil {
+		return err
+	}
+	for _, knowledge := range knowledgeList {
+		if knowledge == nil || knowledge.ManagedWorkID != "" {
+			return ErrManagedWorkerUnavailable
+		}
+	}
 	defer func() {
 		// Wiki rows are independent of the vector engine. Run this on every
 		// return path — including SkipRetry — with its own timeout so a slow
@@ -950,13 +1006,6 @@ func (s *knowledgeBaseService) ProcessKBDelete(ctx context.Context, t *asynq.Tas
 
 	// Step 1: Get all knowledge entries in this knowledge base
 	logger.Infof(ctx, "Fetching all knowledge entries in knowledge base, ID: %s", kbID)
-	knowledgeList, err := s.kgRepo.ListKnowledgeByKnowledgeBaseID(ctx, tenantID, kbID)
-	if err != nil {
-		logger.ErrorWithFields(ctx, err, map[string]interface{}{
-			"knowledge_base_id": kbID,
-		})
-		return err
-	}
 	logger.Infof(ctx, "Found %d knowledge entries to delete", len(knowledgeList))
 	knowledgeIDs = make([]string, 0, len(knowledgeList))
 	for _, knowledge := range knowledgeList {

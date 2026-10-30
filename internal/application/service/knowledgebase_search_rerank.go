@@ -6,6 +6,7 @@ import (
 
 	apperrors "github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/reranking"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
@@ -138,6 +139,9 @@ func (s *knowledgeBaseService) HybridSearchWithRerank(ctx context.Context,
 
 	final := s.rerankCandidates(modelCtx, modelID, params.QueryText, candidates, threshold, topK,
 		reranking.ImageKeepScoreFor(params.VectorThreshold), diag)
+	if api.ManagedJSONActive(ctx) && (diag.Outcome == types.RerankOutcomeModelError || diag.Outcome == types.RerankOutcomeModelUnavailable || diag.Outcome == types.RerankOutcomeNoModel) {
+		return nil, ErrManagedWorkerUnavailable
+	}
 	diag.ResultCount = len(final)
 	logger.Infof(ctx, "Hybrid search rerank: kb=%s model=%s(%s) outcome=%s candidates=%d results=%d",
 		secutils.SanitizeForLog(id), modelID, modelSource, diag.Outcome, len(candidates), len(final))

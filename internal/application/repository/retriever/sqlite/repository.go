@@ -11,6 +11,7 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/common"
 	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
@@ -609,7 +610,11 @@ func (r *sqliteRepository) keywordsRetrieve(ctx context.Context, params types.Re
 		return nil, fmt.Errorf("FTS5 query failed: %w", err)
 	}
 
-	logger.GetLogger(ctx).Infof("[SQLite] keywordsRetrieve: query=%q, ftsQuery=%q, matched=%d rows", params.Query, ftsQuery, len(rows))
+	if api.ManagedJSONActive(ctx) {
+		logger.GetLogger(ctx).Infof("[SQLite] keywordsRetrieve: matched=%d rows", len(rows))
+	} else {
+		logger.GetLogger(ctx).Infof("[SQLite] keywordsRetrieve: query=%q, ftsQuery=%q, matched=%d rows", params.Query, ftsQuery, len(rows))
+	}
 
 	items := make([]*types.IndexWithScore, len(rows))
 	for i, row := range rows {
@@ -618,8 +623,10 @@ func (r *sqliteRepository) keywordsRetrieve(ctx context.Context, params types.Re
 		// to make it positive and human-readable.
 		score := row.Score
 
-		logger.GetLogger(ctx).Infof("[SQLite] keywordsRetrieve: #%d chunk_id=%s, score=%.4f, content_preview=%.60s",
-			i+1, row.ChunkID, score, row.Content)
+		if !api.ManagedJSONActive(ctx) {
+			logger.GetLogger(ctx).Infof("[SQLite] keywordsRetrieve: #%d chunk_id=%s, score=%.4f, content_preview=%.60s",
+				i+1, row.ChunkID, score, row.Content)
+		}
 
 		items[i] = &types.IndexWithScore{
 			ID:              fmt.Sprintf("%d", row.ID),
@@ -719,8 +726,10 @@ func (r *sqliteRepository) vectorRetrieve(ctx context.Context, params types.Retr
 			continue
 		}
 
-		logger.GetLogger(ctx).Infof("[SQLite] vectorRetrieve: #%d chunk_id=%s, distance=%.4f, score=%.4f, content_preview=%.60s",
-			i+1, v.ChunkID, v.Distance, score, v.Content)
+		if !api.ManagedJSONActive(ctx) {
+			logger.GetLogger(ctx).Infof("[SQLite] vectorRetrieve: #%d chunk_id=%s, distance=%.4f, score=%.4f, content_preview=%.60s",
+				i+1, v.ChunkID, v.Distance, score, v.Content)
+		}
 
 		items = append(items, &types.IndexWithScore{
 			ID:              fmt.Sprintf("%d", v.Rowid),

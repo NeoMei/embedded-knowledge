@@ -19,6 +19,8 @@ import (
 	"github.com/Tencent/WeKnora/internal/infrastructure/chunker"
 	"github.com/Tencent/WeKnora/internal/infrastructure/docparser"
 	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/managedcapability"
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/models/asr"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/models/embedding"
@@ -37,6 +39,9 @@ func (s *knowledgeService) cloneKnowledge(
 	src *types.Knowledge,
 	targetKB *types.KnowledgeBase,
 ) (err error) {
+	if src == nil || src.ManagedWorkID != "" {
+		return ErrManagedWorkerUnavailable
+	}
 	sourceKB, err := knowledgeWriteKB(ctx, s.kbService, src)
 	if err != nil {
 		return err
@@ -420,6 +425,10 @@ func (s *knowledgeService) processChunks(ctx context.Context,
 		logger.Infof(ctx, "Vector/keyword indexing disabled for KB %s, skipping embedding model", kb.ID)
 	}
 
+	if api.ManagedJSONActive(ctx) && (embeddingModel == nil || embeddingModel.GetModelName() != managedcapability.EmbeddingModel || embeddingModel.GetDimensions() != managedcapability.EmbeddingDimensions) {
+		return ErrManagedWorkerUnavailable
+	}
+
 	// Resolve the vector store before deleting anything: failing after the
 	// cleanup below would leave the document with neither old nor new chunks.
 	tenantInfo := ctx.Value(types.TenantInfoContextKey).(*types.Tenant)
@@ -482,13 +491,9 @@ func (s *knowledgeService) processChunks(ctx context.Context,
 
 	// 打印每个Chunk的详细信息
 	for idx, chunkData := range chunks {
-		contentPreview := chunkData.Content
-		if len(contentPreview) > 200 {
-			contentPreview = contentPreview[:200] + "..."
-		}
 		logger.Infof(ctx, "[DocReader] Chunk #%d (seq=%d): 内容长度=%d, 图片数=%d, 范围=[%d-%d]",
 			idx, chunkData.Seq, len(chunkData.Content), len(chunkData.Images), chunkData.Start, chunkData.End)
-		logger.Debugf(ctx, "[DocReader] Chunk #%d 内容预览: %s", idx, contentPreview)
+		logDocumentChunkPreview(ctx, idx, chunkData.Content)
 
 		// 打印图片详细信息
 		for imgIdx, img := range chunkData.Images {
@@ -1369,6 +1374,13 @@ func (s *knowledgeService) ProcessSummaryGeneration(ctx context.Context, t *asyn
 		logger.Errorf(ctx, "Failed to unmarshal summary generation payload: %v", err)
 		return nil // Don't retry on unmarshal error
 	}
+	managed, err := managedEnrichmentBlocked(ctx, s.repo, payload.TenantID, payload.KnowledgeID)
+	if err != nil {
+		return err
+	}
+	if managed {
+		return nil
+	}
 	logger.Infof(ctx, "Processing summary generation for knowledge: %s", payload.KnowledgeID)
 
 	// Set tenant and language context
@@ -1761,6 +1773,13 @@ func (s *knowledgeService) ProcessQuestionGeneration(ctx context.Context, t *asy
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
 		logger.Errorf(ctx, "Failed to unmarshal question generation payload: %v", err)
 		return nil // Don't retry on unmarshal error
+	}
+	managed, err := managedEnrichmentBlocked(ctx, s.repo, payload.TenantID, payload.KnowledgeID)
+	if err != nil {
+		return err
+	}
+	if managed {
+		return nil
 	}
 	if len(payload.ChunkIDs) > 0 || payload.ChunkID != "" {
 		return s.processQuestionGenerationForChunks(ctx, t, payload)
@@ -2561,6 +2580,9 @@ func (s *knowledgeService) RegenerateChunkQuestions(
 	if err != nil {
 		return nil, err
 	}
+	if knowledge.ManagedWorkID != "" {
+		return nil, ErrManagedWorkerUnavailable
+	}
 	if knowledge.KnowledgeBaseID != chunk.KnowledgeBaseID || chunk.TenantID != knowledge.TenantID {
 		return nil, werrors.NewForbiddenError("chunk does not belong to its knowledge document")
 	}
@@ -2637,6 +2659,9 @@ func (s *knowledgeService) RegenerateKnowledgeSummary(
 	knowledge, err := s.repo.GetKnowledgeByID(ctx, tenantID, knowledgeID)
 	if err != nil {
 		return nil, err
+	}
+	if knowledge.ManagedWorkID != "" {
+		return nil, ErrManagedWorkerUnavailable
 	}
 	kb, err := s.kbService.GetKnowledgeBaseByID(ctx, knowledge.KnowledgeBaseID)
 	if err != nil {
@@ -3640,6 +3665,19 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 		logger.Errorf(ctx, "failed to unmarshal document process task payload: %v", err)
 		return nil
 	}
+	if payload.ManagedWorkID != "" {
+		if s.managedWorker == nil {
+			return ErrManagedWorkerUnavailable
+		}
+		admission, err := s.managedWorker.Prepare(ctx, payload)
+		if err != nil {
+			return fmt.Errorf("managed worker admission: %w", err)
+		}
+		if admission == nil || admission.Context == nil || !api.ManagedJSONActive(admission.Context) || len(admission.Snapshot) == 0 || len(admission.Snapshot) > 8<<20 {
+			return ErrManagedWorkerUnavailable
+		}
+		ctx = context.WithValue(admission.Context, managedSnapshotKey{}, append([]byte(nil), admission.Snapshot...))
+	}
 
 	ctx = logger.WithRequestID(ctx, payload.RequestId)
 	ctx = logger.WithField(ctx, "document_process", payload.KnowledgeID)
@@ -3665,8 +3703,7 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 	}
 	ctx = context.WithValue(ctx, types.TenantInfoContextKey, tenantInfo)
 
-	logger.Infof(ctx, "Processing document task: knowledge_id=%s, file_path=%s, retry=%d/%d",
-		payload.KnowledgeID, payload.FilePath, retryCount, maxRetry)
+	logDocumentTask(ctx, payload.KnowledgeID, payload.FilePath, retryCount, maxRetry)
 
 	// 幂等性检查：获取knowledge记录
 	knowledge, err := s.repo.GetKnowledgeByID(ctx, payload.TenantID, payload.KnowledgeID)
@@ -3680,6 +3717,9 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 
 	if knowledge == nil {
 		return nil
+	}
+	if knowledge.ManagedWorkID != payload.ManagedWorkID {
+		return ErrManagedWorkerUnavailable
 	}
 
 	if err := validateProcessingKnowledge(knowledge,
@@ -4239,22 +4279,28 @@ func (s *knowledgeService) convert(
 	}
 
 	if !isURL {
-		fileReader, err := s.resolveFileServiceForPath(ctx, kb, payload.FilePath).GetFile(ctx, payload.FilePath)
-		if err != nil {
-			s.failStage(ctx, knowledge.ID, types.StageDocReader,
-				werrors.ErrCodeDocReaderParseFailed, "failed to get file", err)
-			return s.failKnowledge(ctx, knowledge, isLastRetry, "failed to get file: %v", err)
+		if snapshot, managed := ctx.Value(managedSnapshotKey{}).([]byte); managed {
+			req.FileContent = append([]byte(nil), snapshot...)
+			req.FileName = payload.FileName
+			req.FileType = fileType
+		} else {
+			fileReader, err := s.resolveFileServiceForPath(ctx, kb, payload.FilePath).GetFile(ctx, payload.FilePath)
+			if err != nil {
+				s.failStage(ctx, knowledge.ID, types.StageDocReader,
+					werrors.ErrCodeDocReaderParseFailed, "failed to get file", err)
+				return s.failKnowledge(ctx, knowledge, isLastRetry, "failed to get file: %v", err)
+			}
+			defer fileReader.Close()
+			contentBytes, err := io.ReadAll(fileReader)
+			if err != nil {
+				s.failStage(ctx, knowledge.ID, types.StageDocReader,
+					werrors.ErrCodeDocReaderParseFailed, "failed to read file", err)
+				return s.failKnowledge(ctx, knowledge, isLastRetry, "failed to read file: %v", err)
+			}
+			req.FileContent = contentBytes
+			req.FileName = payload.FileName
+			req.FileType = fileType
 		}
-		defer fileReader.Close()
-		contentBytes, err := io.ReadAll(fileReader)
-		if err != nil {
-			s.failStage(ctx, knowledge.ID, types.StageDocReader,
-				werrors.ErrCodeDocReaderParseFailed, "failed to read file", err)
-			return s.failKnowledge(ctx, knowledge, isLastRetry, "failed to read file: %v", err)
-		}
-		req.FileContent = contentBytes
-		req.FileName = payload.FileName
-		req.FileType = fileType
 	}
 
 	result, err := s.callDocReaderWithTimeout(ctx, reader, req)
@@ -4320,13 +4366,20 @@ func (s *knowledgeService) callDocReaderWithTimeout(
 		// error via %w so errors.Is(callCtx.Err(), context.DeadlineExceeded)
 		// still works for upstream classification.
 		if errors.Is(callCtx.Err(), context.DeadlineExceeded) && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			logger.Errorf(ctx, "[convert] docreader call timed out after %s (limit %s) for %q",
-				elapsed, timeout, req.FileName)
+			if api.ManagedJSONActive(ctx) {
+				logger.Errorf(ctx, "[convert] managed docreader call timed out after %s (limit %s)", elapsed, timeout)
+			} else {
+				logger.Errorf(ctx, "[convert] docreader call timed out after %s (limit %s) for %q", elapsed, timeout, req.FileName)
+			}
 			return nil, fmt.Errorf("docreader call timeout after %s: %w", timeout, err)
 		}
 		return nil, err
 	}
-	logger.Infof(ctx, "[convert] docreader call ok in %s for %q", elapsed, req.FileName)
+	if api.ManagedJSONActive(ctx) {
+		logger.Infof(ctx, "[convert] managed docreader call ok in %s", elapsed)
+	} else {
+		logger.Infof(ctx, "[convert] docreader call ok in %s for %q", elapsed, req.FileName)
+	}
 	return result, nil
 }
 
@@ -4355,6 +4408,14 @@ func isLikelyRateLimitError(err error) bool {
 func (s *knowledgeService) resolveDocReader(
 	ctx context.Context, engine, fileType string, isURL bool, overrides map[string]string,
 ) interfaces.DocReader {
+	if api.ManagedJSONActive(ctx) {
+		// Managed pilot content is restricted to a local, single TXT reader;
+		// tenant parser rules must not send the snapshot to a remote service.
+		if isURL || !strings.EqualFold(fileType, "txt") {
+			return nil
+		}
+		return &docparser.SimpleFormatReader{}
+	}
 	reader, err := docparser.NewReader(ctx, engine, fileType, isURL, docparser.ReaderDeps{
 		Overrides:               overrides,
 		Remote:                  s.documentReader,
@@ -4724,4 +4785,38 @@ func runKnowledgeListReparseSubmissions(
 		"%w: batch reparse submitted %d item(s) and failed %d: %w",
 		asynq.SkipRetry, outcome.Submitted, outcome.Failed, errors.Join(failures...),
 	)
+}
+
+// Managed work must not write document content or local paths to diagnostics.
+func logDocumentTask(ctx context.Context, knowledgeID, filePath string, retry, maxRetry int) {
+	if api.ManagedJSONActive(ctx) {
+		logger.Infof(ctx, "Processing managed document task: knowledge_id=%s, retry=%d/%d", knowledgeID, retry, maxRetry)
+		return
+	}
+	logger.Infof(ctx, "Processing document task: knowledge_id=%s, file_path=%s, retry=%d/%d", knowledgeID, filePath, retry, maxRetry)
+}
+
+func logDocumentChunkPreview(ctx context.Context, index int, content string) {
+	if api.ManagedJSONActive(ctx) {
+		return
+	}
+	if len(content) > 200 {
+		content = content[:200] + "..."
+	}
+	logger.Debugf(ctx, "[DocReader] Chunk #%d 内容预览: %s", index, content)
+}
+
+// Async retries and manual requests must check the authoritative knowledge row.
+func managedEnrichmentBlocked(ctx context.Context, repo interfaces.KnowledgeRepository, tenant uint64, knowledgeID string) (bool, error) {
+	if repo == nil || tenant == 0 || knowledgeID == "" {
+		return false, ErrManagedWorkerUnavailable
+	}
+	knowledge, err := repo.GetKnowledgeByID(ctx, tenant, knowledgeID)
+	if err != nil {
+		return false, err
+	}
+	if knowledge == nil || knowledge.TenantID != tenant {
+		return false, ErrManagedWorkerUnavailable
+	}
+	return knowledge.ManagedWorkID != "", nil
 }

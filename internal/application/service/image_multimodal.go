@@ -157,10 +157,6 @@ func (s *ImageMultimodalService) Handle(ctx context.Context, task *asynq.Task) (
 		return fmt.Errorf("unmarshal image multimodal payload: %w", err)
 	}
 
-	logger.Infof(ctx,
-		"[ImageMultimodal] Processing image: chunk=%s, url=%s, ocr=%v, caption=%v, attrs=%v",
-		payload.ChunkID, payload.ImageURL, payload.EnableOCR, payload.EnableCaption, payload.ImageAttrsEnabled)
-
 	ctx = context.WithValue(ctx, types.TenantIDContextKey, payload.TenantID)
 	if payload.Language != "" {
 		ctx = context.WithValue(ctx, types.LanguageContextKey, payload.Language)
@@ -170,8 +166,8 @@ func (s *ImageMultimodalService) Handle(ctx context.Context, task *asynq.Task) (
 	// this stale image would drain a slot of the new run and finalize it
 	// before its images are done.
 	if attemptSuperseded(ctx, s.tracker(), payload.KnowledgeID, payload.Attempt) {
-		logger.Infof(ctx, "[ImageMultimodal] Attempt %d of %s superseded, dropping image %s",
-			payload.Attempt, payload.KnowledgeID, payload.ImageURL)
+		logger.Infof(ctx, "[ImageMultimodal] Attempt %d of %s superseded, dropping image",
+			payload.Attempt, payload.KnowledgeID)
 		return nil
 	}
 
@@ -180,7 +176,7 @@ func (s *ImageMultimodalService) Handle(ctx context.Context, task *asynq.Task) (
 	// capacity (asynq default MaxRetry=25 on legacy tasks).
 	drop, dropErr := s.shouldDropOrphanedMultimodal(ctx, &payload)
 	if dropErr != nil {
-		if isFinalAsynqAttempt(ctx) {
+		if !errors.Is(dropErr, asynq.SkipRetry) && isFinalAsynqAttempt(ctx) {
 			// No retry follows, so this image must still be counted or
 			// the parent never reaches post-process.
 			if err := s.checkAndFinalizeAllImages(ctx, payload); err != nil {
@@ -197,6 +193,30 @@ func (s *ImageMultimodalService) Handle(ctx context.Context, task *asynq.Task) (
 		// of dropped orphans cannot strand multimodal:pending forever.
 		return s.checkAndFinalizeAllImages(ctx, payload)
 	}
+
+	// A queued task's claimed parent is not authority. Check the actual chunk
+	// and knowledge row before resolving or invoking any model.
+	allowed, err := s.allowNativeImageTask(ctx, &payload)
+	if err != nil {
+		// Preserve the native final-attempt counter contract only when the
+		// actual parent can still be verified as a matching ordinary document.
+		// If that lookup fails, there is no safe authority to finalize it.
+		if isFinalAsynqAttempt(ctx) && s.knowledgeRepo != nil {
+			k, lookupErr := s.knowledgeRepo.GetKnowledgeByIDOnly(ctx, payload.KnowledgeID)
+			if lookupErr == nil && k != nil && k.ID == payload.KnowledgeID && k.TenantID == payload.TenantID && k.KnowledgeBaseID == payload.KnowledgeBaseID && k.ManagedWorkID == "" {
+				if finalizeErr := s.checkAndFinalizeAllImages(ctx, payload); finalizeErr != nil {
+					return errors.Join(err, finalizeErr)
+				}
+			}
+		}
+		return err
+	}
+	if !allowed {
+		return fmt.Errorf("image multimodal source is not authorized: %w", asynq.SkipRetry)
+	}
+	logger.Infof(ctx,
+		"[ImageMultimodal] Processing image: chunk=%s, url=%s, ocr=%v, caption=%v, attrs=%v",
+		payload.ChunkID, payload.ImageURL, payload.EnableOCR, payload.EnableCaption, payload.ImageAttrsEnabled)
 
 	tracker := s.tracker()
 	// The trace map is shared with the per-image stage below: fields Handle
@@ -599,6 +619,12 @@ func (s *ImageMultimodalService) shouldDropOrphanedMultimodal(
 		}
 		if err != nil {
 			return false, err
+		}
+		if k == nil {
+			return true, nil
+		}
+		if k.ManagedWorkID != "" {
+			return false, fmt.Errorf("managed image task unavailable: %w", asynq.SkipRetry)
 		}
 		switch k.ParseStatus {
 		case types.ParseStatusCancelled, types.ParseStatusDeleting:
@@ -1053,4 +1079,28 @@ func (s *ImageMultimodalService) enqueueKnowledgePostProcessTask(
 	}
 	logger.Infof(ctx, "[ImageMultimodal] Enqueued post process task for %s", payload.KnowledgeID)
 	return nil
+}
+
+// allowNativeImageTask resolves the actual chunk owner independently of the
+// untrusted task fields. Managed content has no VLM authority in this pilot.
+func (s *ImageMultimodalService) allowNativeImageTask(ctx context.Context, payload *types.ImageMultimodalPayload) (bool, error) {
+	if s == nil || payload == nil || payload.TenantID == 0 || payload.ChunkID == "" || payload.KnowledgeID == "" || payload.KnowledgeBaseID == "" || s.chunkService == nil || s.knowledgeRepo == nil {
+		return false, nil
+	}
+	ctx = context.WithValue(ctx, types.TenantIDContextKey, payload.TenantID)
+	chunk, err := s.chunkService.GetChunkByID(ctx, payload.ChunkID)
+	if err != nil {
+		return false, err
+	}
+	if chunk == nil || chunk.ID != payload.ChunkID || chunk.TenantID != payload.TenantID || chunk.KnowledgeID != payload.KnowledgeID || chunk.KnowledgeBaseID != payload.KnowledgeBaseID {
+		return false, nil
+	}
+	knowledge, err := s.knowledgeRepo.GetKnowledgeByIDOnly(ctx, chunk.KnowledgeID)
+	if err != nil {
+		return false, err
+	}
+	if knowledge == nil || knowledge.ID != chunk.KnowledgeID || knowledge.TenantID != chunk.TenantID || knowledge.KnowledgeBaseID != chunk.KnowledgeBaseID || knowledge.ManagedWorkID != "" {
+		return false, nil
+	}
+	return true, nil
 }

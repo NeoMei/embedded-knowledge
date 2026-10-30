@@ -80,7 +80,7 @@ func matchesTransfer(
 }
 
 func validateTransferKnowledge(k *types.Knowledge, kb *types.KnowledgeBase) error {
-	if k == nil || k.ID == "" || k.TenantID != kb.TenantID || k.KnowledgeBaseID != kb.ID {
+	if k == nil || k.ID == "" || k.ManagedWorkID != "" || k.TenantID != kb.TenantID || k.KnowledgeBaseID != kb.ID {
 		return fmt.Errorf("knowledge binding does not match the transfer scope")
 	}
 	return nil
@@ -209,7 +209,7 @@ func (s *knowledgeService) planKnowledgeMove(
 }
 
 func validateMoveItem(ctx context.Context, k *types.Knowledge, source, target *types.KnowledgeBase, mode string) error {
-	if k == nil || k.TenantID != source.TenantID {
+	if k == nil || k.ManagedWorkID != "" || k.TenantID != source.TenantID {
 		return access.ErrForbidden
 	}
 	state, err := transferState(k)

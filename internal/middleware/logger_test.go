@@ -1,10 +1,14 @@
 package middleware
 
 import (
+	"bytes"
 	"errors"
+	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/stretchr/testify/require"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -231,4 +235,29 @@ func TestSanitizeQueryRedactsTerminalTicket(t *testing.T) {
 	if strings.Contains(got, "signature") {
 		t.Fatalf("sanitizeQuery() leaked the ticket: %q", got)
 	}
+}
+
+func TestManagedKnowledgeBodiesNeverEnterAccessLogs(t *testing.T) {
+	t.Setenv("LOG_FORMAT", "%msg")
+	logger.ConfigureFromEnv()
+	var logs bytes.Buffer
+	logger.SetOutput(&logs)
+	t.Cleanup(func() { logger.SetOutput(os.Stdout) })
+	engine := gin.New()
+	engine.Use(Logger())
+	engine.POST("/api/v1/knowledge-bases/:id/managed-hybrid-search", func(c *gin.Context) {
+		raw, err := io.ReadAll(c.Request.Body)
+		require.NoError(t, err)
+		require.Contains(t, string(raw), "SECRET_CAPABILITY")
+		c.JSON(403, gin.H{"content": "SECRET_DOCUMENT", "query": "SECRET_QUERY"})
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/knowledge-bases/kb/managed-hybrid-search", strings.NewReader(`{"capability":"SECRET_CAPABILITY","query":"SECRET_QUERY"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+	require.Equal(t, 403, response.Code)
+	require.Contains(t, logs.String(), "managed-hybrid-search")
+	require.NotContains(t, logs.String(), "SECRET_CAPABILITY")
+	require.NotContains(t, logs.String(), "SECRET_DOCUMENT")
+	require.NotContains(t, logs.String(), "SECRET_QUERY")
 }

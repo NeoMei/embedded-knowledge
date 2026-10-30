@@ -265,6 +265,13 @@ func (s *knowledgeService) CloneKnowledgeBase(ctx context.Context, srcID, dstID 
 // It also ensures that the chunk's relationships (like pre and next chunk IDs) are maintained
 // by mapping the source chunk IDs to the new target chunk IDs.
 func (s *knowledgeService) CloneChunk(ctx context.Context, src, dst *types.Knowledge) (err error) {
+	if src == nil || dst == nil || src.ManagedWorkID != "" || dst.ManagedWorkID != "" {
+		return ErrManagedWorkerUnavailable
+	}
+	persistedSource, err := s.repo.GetKnowledgeByID(ctx, src.TenantID, src.ID)
+	if err != nil || persistedSource == nil || persistedSource.ManagedWorkID != "" {
+		return ErrManagedWorkerUnavailable
+	}
 	sourceKB, err := knowledgeWriteKB(ctx, s.kbService, src)
 	if err != nil {
 		return err

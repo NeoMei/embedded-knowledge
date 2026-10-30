@@ -1,0 +1,1 @@
+ALTER TABLE knowledges ADD COLUMN managed_work_id VARCHAR(200) NOT NULL DEFAULT '';

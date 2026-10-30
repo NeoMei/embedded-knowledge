@@ -92,6 +92,13 @@ func (c *Client) Rerank(ctx context.Context, query string, documents []string) (
 	if err != nil {
 		return nil, err
 	}
+	if api.ManagedJSONActive(ctx) && c.cfg.Endpoint.Model == "qwen3-rerank" {
+		parameters, ok := body["parameters"].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("managed rerank request parameters invalid")
+		}
+		parameters["return_documents"] = false
+	}
 	var decoded response
 	url := c.cfg.Endpoint.Resolve(c.cfg.Settings.Path)
 	if err := c.cfg.Endpoint.PostJSON(ctx, url, body, &decoded); err != nil {

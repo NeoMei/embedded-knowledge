@@ -99,3 +99,18 @@ func TestGetKnowledgeBatch_TracksDeletionUntilSoftDelete(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, rows)
 }
+
+func TestOrdinaryKnowledgeListingExcludesManagedRowsBeforePagination(t *testing.T) {
+	db := setupKnowledgeTestDB(t)
+	const tenantID uint64 = 7
+	kbID := "managed-list-kb"
+	native := insertKnowledgeInKB(t, db, tenantID, kbID, types.ParseStatusCompleted)
+	managed := insertKnowledgeInKB(t, db, tenantID, kbID, types.ParseStatusCompleted)
+	require.NoError(t, db.Model(&types.Knowledge{}).Where("id = ?", managed).Update("managed_work_id", "work").Error)
+	repo := NewKnowledgeRepository(db)
+	rows, total, err := repo.ListPagedKnowledgeByKnowledgeBaseID(context.Background(), tenantID, kbID, &types.Pagination{Page: 1, PageSize: 10}, types.KnowledgeListFilter{})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, total)
+	require.Len(t, rows, 1)
+	require.Equal(t, native, rows[0].ID)
+}

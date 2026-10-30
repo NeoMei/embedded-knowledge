@@ -50,7 +50,7 @@ func fixture(t *testing.T) *Journal {
 		db, err = gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "journal.db")), &gorm.Config{})
 		require.NoError(t, err)
 	}
-	j, err := Open(db, []byte("0123456789abcdef0123456789abcdef"), time.Hour)
+	j, err := Open(db, []byte("0123456789abcdef0123456789abcdef"), []byte("abcdef0123456789abcdef0123456789"), time.Hour)
 	require.NoError(t, err)
 	return j
 }
@@ -89,7 +89,7 @@ func TestJournalUnknownNeverRedispatchesAfterReopen(t *testing.T) {
 	}
 	_, err := j.Execute(context.Background(), s, []byte("input"), send)
 	require.ErrorIs(t, err, ErrUnresolved)
-	reopened, err := Open(j.db, []byte("0123456789abcdef0123456789abcdef"), time.Hour)
+	reopened, err := Open(j.db, []byte("0123456789abcdef0123456789abcdef"), []byte("abcdef0123456789abcdef0123456789"), time.Hour)
 	require.NoError(t, err)
 	_, err = reopened.Execute(context.Background(), s, []byte("input"), send)
 	require.ErrorIs(t, err, ErrUnresolved)
@@ -115,7 +115,7 @@ func TestEncryptedResultAndKeyedDigests(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, result, replayed)
 	require.Equal(t, 1, calls)
-	wrongKey, err := Open(j.db, []byte("fedcba9876543210fedcba9876543210"), time.Hour)
+	wrongKey, err := Open(j.db, []byte("fedcba9876543210fedcba9876543210"), []byte("abcdef0123456789abcdef0123456789"), time.Hour)
 	require.Nil(t, wrongKey)
 	require.ErrorIs(t, err, ErrKeyMismatch)
 	require.Equal(t, 1, calls)
@@ -125,7 +125,7 @@ func TestJournalKeyVerifierFailsClosedAcrossNewRequests(t *testing.T) {
 	j := fixture(t)
 	_, err := j.Execute(context.Background(), scope(), []byte("input"), func(context.Context, string) ([]byte, error) { return []byte("result"), nil })
 	require.NoError(t, err)
-	other, err := Open(j.db, []byte("fedcba9876543210fedcba9876543210"), time.Hour)
+	other, err := Open(j.db, []byte("fedcba9876543210fedcba9876543210"), []byte("abcdef0123456789abcdef0123456789"), time.Hour)
 	require.Nil(t, other)
 	require.ErrorIs(t, err, ErrKeyMismatch)
 	count := int64(0)
@@ -195,7 +195,7 @@ func TestUnversionedJournalDataNeverAdopted(t *testing.T) {
 				}
 			}
 			require.NoError(t, j.db.Exec("DELETE FROM managed_model_journal_meta").Error)
-			_, err = Open(j.db, []byte("0123456789abcdef0123456789abcdef"), time.Hour)
+			_, err = Open(j.db, []byte("0123456789abcdef0123456789abcdef"), []byte("abcdef0123456789abcdef0123456789"), time.Hour)
 			require.ErrorIs(t, err, ErrLegacy)
 		})
 	}
@@ -320,7 +320,7 @@ func TestExpiredCleanupPagesPastCorruptionAndKeepsSuspiciousRows(t *testing.T) {
 	require.Zero(t, count)
 	require.ErrorIs(t, err, ErrCorrupt)
 	// A scheduler/process restart must resume after the suspicious first row.
-	reopened, err := Open(j.db, []byte("0123456789abcdef0123456789abcdef"), time.Hour)
+	reopened, err := Open(j.db, []byte("0123456789abcdef0123456789abcdef"), []byte("abcdef0123456789abcdef0123456789"), time.Hour)
 	require.NoError(t, err)
 	reopened.now = func() time.Time { return now }
 	for batch := 1; batch < 4; batch++ {
@@ -366,7 +366,7 @@ func TestCleanupCursorTamperingFailsClosed(t *testing.T) {
 	require.NoError(t, j.db.Model(&journalMeta{}).Where("id = ?", 1).Update("cursor_key", "forged").Error)
 	_, err := j.PurgeExpired(context.Background(), 1)
 	require.ErrorIs(t, err, ErrUnresolved)
-	_, err = Open(j.db, []byte("0123456789abcdef0123456789abcdef"), time.Hour)
+	_, err = Open(j.db, []byte("0123456789abcdef0123456789abcdef"), []byte("abcdef0123456789abcdef0123456789"), time.Hour)
 	require.ErrorIs(t, err, ErrLegacy)
 }
 
@@ -376,7 +376,7 @@ func TestOpenRequiresProtectedKeyAndBoundedRetention(t *testing.T) {
 		key []byte
 		ttl time.Duration
 	}{{nil, time.Hour}, {[]byte("short"), time.Hour}, {make([]byte, 32), 0}, {make([]byte, 32), 31 * 24 * time.Hour}} {
-		_, err := Open(j.db, config.key, config.ttl)
+		_, err := Open(j.db, config.key, []byte("abcdef0123456789abcdef0123456789"), config.ttl)
 		require.ErrorIs(t, err, ErrInvalid)
 	}
 }
@@ -387,7 +387,7 @@ func TestLegacyPlaintextFailsClosedOnOpen(t *testing.T) {
 	_, err := j.Execute(context.Background(), s, []byte("input"), func(context.Context, string) ([]byte, error) { return []byte("result"), nil })
 	require.NoError(t, err)
 	require.NoError(t, j.db.Model(&record{}).Where("logical_id = ?", s.LogicalID).Updates(map[string]any{"result": []byte("legacy plaintext"), "result_digest": digest([]byte("legacy plaintext")), "expires_at": 0}).Error)
-	_, err = Open(j.db, []byte("0123456789abcdef0123456789abcdef"), time.Hour)
+	_, err = Open(j.db, []byte("0123456789abcdef0123456789abcdef"), []byte("abcdef0123456789abcdef0123456789"), time.Hour)
 	require.ErrorIs(t, err, ErrLegacy)
 }
 
@@ -396,7 +396,7 @@ func TestJournalDoesNotLogDatabaseParametersOrCiphertext(t *testing.T) {
 	noisy := logger.New(log.New(&captured, "", 0), logger.Config{LogLevel: logger.Info, ParameterizedQueries: false})
 	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "journal.db")), &gorm.Config{Logger: noisy})
 	require.NoError(t, err)
-	j, err := Open(db, []byte("0123456789abcdef0123456789abcdef"), time.Hour)
+	j, err := Open(db, []byte("0123456789abcdef0123456789abcdef"), []byte("abcdef0123456789abcdef0123456789"), time.Hour)
 	require.NoError(t, err)
 	_, err = j.Execute(context.Background(), scope(), []byte("input-sensitive"), func(context.Context, string) ([]byte, error) { return []byte("output-sensitive"), nil })
 	require.NoError(t, err)
@@ -425,7 +425,7 @@ func TestJournalPostgresRoundTripAndKeyBinding(t *testing.T) {
 	db, err := gorm.Open(postgres.Open(parsed.String()), &gorm.Config{Logger: logger.Discard})
 	require.NoError(t, err)
 	t.Cleanup(func() { connection, _ := db.DB(); _ = connection.Close() })
-	j, err := Open(db, []byte("0123456789abcdef0123456789abcdef"), time.Hour)
+	j, err := Open(db, []byte("0123456789abcdef0123456789abcdef"), []byte("abcdef0123456789abcdef0123456789"), time.Hour)
 	require.NoError(t, err)
 	s := scope()
 	calls := 0
@@ -436,7 +436,7 @@ func TestJournalPostgresRoundTripAndKeyBinding(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, first, again)
 	require.Equal(t, 1, calls)
-	_, err = Open(db, []byte("fedcba9876543210fedcba9876543210"), time.Hour)
+	_, err = Open(db, []byte("fedcba9876543210fedcba9876543210"), []byte("abcdef0123456789abcdef0123456789"), time.Hour)
 	require.ErrorIs(t, err, ErrKeyMismatch)
 	require.NoError(t, db.Model(&record{}).Where("logical_id = ? AND batch = ?", s.LogicalID, s.Batch).Update("state_mac", "tampered").Error)
 	s.Batch = 1
@@ -746,4 +746,154 @@ func TestCleanupAuditsFutureExpiryAndRetainsValidUnexpiredResult(t *testing.T) {
 	require.NoError(t, j.db.Order("request_key").Find(&saved).Error)
 	require.Equal(t, rows[0].Result, saved[0].Result)
 	require.Equal(t, rows[1].Result, saved[1].Result)
+}
+
+func TestDefinitelyNotSentCanRetryWithSameCallID(t *testing.T) {
+	j := fixture(t)
+	s := scope()
+	var first string
+	_, err := j.Execute(context.Background(), s, []byte("input"), func(_ context.Context, id string) ([]byte, error) { first = id; return nil, ErrDefinitelyNotSent })
+	require.ErrorIs(t, err, ErrDefinitelyNotSent)
+	var second string
+	got, err := j.Execute(context.Background(), s, []byte("input"), func(_ context.Context, id string) ([]byte, error) { second = id; return []byte("settled"), nil })
+	require.NoError(t, err)
+	require.Equal(t, first, second)
+	require.Equal(t, []byte("settled"), got)
+}
+
+func TestRestoredEarlierJournalUsesSameCallID(t *testing.T) {
+	first, second := fixture(t), fixture(t)
+	s := scope()
+	var ids []string
+	sender := func(_ context.Context, id string) ([]byte, error) {
+		ids = append(ids, id)
+		return []byte("settled"), nil
+	}
+	_, err := first.Execute(context.Background(), s, []byte("input"), sender)
+	require.NoError(t, err)
+	_, err = second.Execute(context.Background(), s, []byte("input"), sender)
+	require.NoError(t, err)
+	require.Len(t, ids, 2)
+	require.Equal(t, ids[0], ids[1])
+}
+
+func TestCallIDRequiresIndependentStableKey(t *testing.T) {
+	j := fixture(t)
+	s := scope()
+	var id string
+	_, err := j.Execute(context.Background(), s, []byte("input"), func(_ context.Context, call string) ([]byte, error) { id = call; return []byte("ok"), nil })
+	require.NoError(t, err)
+	keyBytes, err := json.Marshal([]any{s.LogicalID, s.Operation, s.Batch})
+	require.NoError(t, err)
+	require.NotEqual(t, "wk_"+digest(keyBytes)[:60], id)
+	_, err = Open(j.db, []byte("0123456789abcdef0123456789abcdef"), []byte("0123456789abcdef0123456789abcdef"), time.Hour)
+	require.Error(t, err)
+	_, err = Open(j.db, []byte("0123456789abcdef0123456789abcdef"), []byte("0123456789fedcba0123456789fedcba"), time.Hour)
+	require.Error(t, err)
+}
+
+func TestConcurrentNotSentRetriesDispatchOnceAcrossConnections(t *testing.T) {
+	j := fixture(t)
+	scope := scope()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := j.Execute(ctx, scope, []byte("input"), func(context.Context, string) ([]byte, error) { return nil, ErrDefinitelyNotSent })
+	require.ErrorIs(t, err, ErrDefinitelyNotSent)
+	sqlDB, err := j.db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(4)
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	results := make(chan error, 2)
+	start := make(chan struct{})
+	var sent atomic.Int32
+	for i := 0; i < 2; i++ {
+		go func() {
+			err := j.db.Connection(func(tx *gorm.DB) error {
+				local := *j
+				local.db = tx
+				<-start
+				_, err := local.Execute(ctx, scope, []byte("input"), func(context.Context, string) ([]byte, error) {
+					sent.Add(1)
+					entered <- struct{}{}
+					<-release
+					return []byte("settled"), nil
+				})
+				return err
+			})
+			results <- err
+		}()
+	}
+	close(start)
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("no dispatch")
+	}
+	// The first sender holds its database connection, forcing the competing
+	// retry through a different one while the call remains DISPATCHED.
+	var rejected error
+	select {
+	case rejected = <-results:
+	case <-ctx.Done():
+		close(release)
+		t.Fatal("competing retry blocked")
+	}
+	close(release)
+	second := <-results
+	require.Error(t, rejected)
+	require.NoError(t, second)
+	require.EqualValues(t, 1, sent.Load())
+}
+
+func TestUnknownRecoveredOnlyByReadWithoutRedispatch(t *testing.T) {
+	j := fixture(t)
+	scope := scope()
+	input := []byte("input")
+	sends := 0
+	_, err := j.Execute(context.Background(), scope, input, func(context.Context, string) ([]byte, error) { sends++; return nil, errors.New("lost result") })
+	require.ErrorIs(t, err, ErrUnresolved)
+	info, err := j.Inspect(context.Background(), scope, input)
+	require.NoError(t, err)
+	reads := 0
+	recovered, err := j.Recover(context.Background(), scope, input, func(_ context.Context, callID string) ([]byte, error) {
+		reads++
+		require.Equal(t, info.CallID, callID)
+		return []byte("settled"), nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, []byte("settled"), recovered)
+	require.Equal(t, 1, sends)
+	require.Equal(t, 1, reads)
+	result, err := j.Execute(context.Background(), scope, input, func(context.Context, string) ([]byte, error) { sends++; return nil, errors.New("must not send") })
+	require.NoError(t, err)
+	require.Equal(t, recovered, result)
+	require.Equal(t, 1, sends)
+}
+
+func TestRecoveryRejectsBindingChangedDuringResultRead(t *testing.T) {
+	for _, target := range []string{"owner", "operation"} {
+		t.Run(target, func(t *testing.T) {
+			j := fixture(t)
+			s := scope()
+			input := []byte("input")
+			_, err := j.Execute(context.Background(), s, input, func(context.Context, string) ([]byte, error) {
+				return nil, errors.New("lost result")
+			})
+			require.ErrorIs(t, err, ErrUnresolved)
+			_, err = j.Recover(context.Background(), s, input, func(context.Context, string) ([]byte, error) {
+				if target == "owner" {
+					require.NoError(t, j.db.Model(&logicalOwner{}).Where("logical_id = ?", s.LogicalID).Update("actor_id", "other").Error)
+				} else {
+					require.NoError(t, j.db.Model(&logicalOperation{}).Where("operation_key = ?", digestJSONOperation(s.LogicalID, s.Operation)).Update("model", "other").Error)
+				}
+				return []byte("settled"), nil
+			})
+			require.Error(t, err)
+			var row record
+			require.NoError(t, j.db.Where("logical_id = ?", s.LogicalID).First(&row).Error)
+			require.Equal(t, "DISPATCHED", row.Status)
+			require.Empty(t, row.Result)
+		})
+	}
 }

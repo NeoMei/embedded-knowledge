@@ -99,7 +99,7 @@ func KBIDFromKnowledgeIDParam(param string, kgService KnowledgeLookup) KBIDResol
 			}
 			return "", err
 		}
-		if k == nil {
+		if k == nil || k.ManagedWorkID != "" {
 			return "", apperrors.NewNotFoundError("Knowledge not found")
 		}
 		return k.KnowledgeBaseID, nil
@@ -138,6 +138,32 @@ func KBIDFromChunkIDParam(param string, chunkService ChunkLookup) KBIDResolver {
 			return "", apperrors.NewNotFoundError("Chunk not found")
 		}
 		return ch.KnowledgeBaseID, nil
+	}
+}
+
+// KBIDFromChunkIDAndKnowledgeParam denies ordinary access to managed chunks.
+// The protected parent is loaded independently from the persisted knowledge row.
+func KBIDFromChunkIDAndKnowledgeParam(param string, chunks ChunkLookup, knowledges KnowledgeLookup) KBIDResolver {
+	return func(c *gin.Context) (string, error) {
+		id := c.Param(param)
+		if id == "" || chunks == nil || knowledges == nil {
+			return "", apperrors.NewNotFoundError("Chunk not found")
+		}
+		chunk, err := chunks.GetChunkByIDOnly(c.Request.Context(), id)
+		if err != nil {
+			return "", err
+		}
+		if chunk == nil || chunk.KnowledgeID == "" {
+			return "", apperrors.NewNotFoundError("Chunk not found")
+		}
+		knowledge, err := knowledges.GetKnowledgeByIDOnly(c.Request.Context(), chunk.KnowledgeID)
+		if err != nil {
+			return "", err
+		}
+		if knowledge == nil || knowledge.ManagedWorkID != "" || knowledge.ID != chunk.KnowledgeID || knowledge.TenantID != chunk.TenantID || knowledge.KnowledgeBaseID != chunk.KnowledgeBaseID {
+			return "", apperrors.NewNotFoundError("Chunk not found")
+		}
+		return chunk.KnowledgeBaseID, nil
 	}
 }
 

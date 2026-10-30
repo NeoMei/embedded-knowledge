@@ -110,6 +110,10 @@ type kbDeleteKBRepo struct {
 	deletedID string
 }
 
+func (r *kbDeleteKBRepo) DeleteWithoutManaged(ctx context.Context, tenant uint64, id string) error {
+	return r.DeleteKnowledgeBase(ctx, id)
+}
+
 func (r *kbDeleteKBRepo) DeleteKnowledgeBase(_ context.Context, id string) error {
 	r.deletedID = id
 	delete(r.rows, id)
@@ -162,6 +166,7 @@ func TestDeleteKnowledgeBaseCleansUpDataSources(t *testing.T) {
 
 	svc := &knowledgeBaseService{
 		repo:        kbRepo,
+		kgRepo:      emptyKBKnowledgeRepo{},
 		shareRepo:   nil,
 		asynqClient: kbDeleteTaskEnqueuer{},
 		dsRepo:      dsRepo,
@@ -207,6 +212,7 @@ func TestDeleteKnowledgeBaseContinuesWhenDataSourceCleanupFails(t *testing.T) {
 
 	svc := &knowledgeBaseService{
 		repo:        kbRepo,
+		kgRepo:      emptyKBKnowledgeRepo{},
 		asynqClient: kbDeleteTaskEnqueuer{},
 		dsRepo:      dsRepo,
 		syncLogRepo: &kbDeleteSyncLogRepo{},

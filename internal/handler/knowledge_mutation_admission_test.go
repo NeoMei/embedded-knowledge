@@ -251,3 +251,29 @@ func TestBatchReparsePreservesAdminAndRBACRolloutPolicy(t *testing.T) {
 		})
 	}
 }
+
+func TestManagedBatchMutationRejectedBeforeEnqueue(t *testing.T) {
+	for _, route := range []string{"batch", "clear", "reparse"} {
+		t.Run(route, func(t *testing.T) {
+			managed := admissionKnowledge(false)
+			managed.ManagedWorkID = "work"
+			kg := &mutationAdmissionKnowledge{rows: []*types.Knowledge{{ID: "other", TenantID: 7, KnowledgeBaseID: "kb"}, managed}}
+			queue := &documentDeleteEnqueuer{}
+			h := &KnowledgeHandler{cfg: transferHandlerConfig(), kbService: admissionKB("user"), kgService: kg, asynqClient: queue}
+			r := documentHandlerRouter()
+			method, path, body := http.MethodPost, "/batch", `{"kb_id":"kb","ids":["other","doc"]}`
+			switch route {
+			case "batch":
+				r.POST("/batch", h.BatchDeleteKnowledge)
+			case "clear":
+				r.DELETE("/:id", h.ClearKnowledgeBaseContents)
+				method, path, body = http.MethodDelete, "/kb", ""
+			case "reparse":
+				r.POST("/batch", h.BatchReparseKnowledge)
+			}
+			w := mutationRequest(r, method, path, body)
+			require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+			require.Nil(t, queue.task)
+		})
+	}
+}

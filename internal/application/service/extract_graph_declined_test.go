@@ -35,6 +35,12 @@ func (r graphChunkRepo) GetChunkByID(context.Context, uint64, string) (*types.Ch
 	return r.chunk, nil
 }
 
+type graphNativeKnowledgeRepo struct{ interfaces.KnowledgeRepository }
+
+func (graphNativeKnowledgeRepo) GetKnowledgeByID(context.Context, uint64, string) (*types.Knowledge, error) {
+	return &types.Knowledge{ID: "doc", TenantID: 1, KnowledgeBaseID: "kb1"}, nil
+}
+
 type graphKBRepo struct {
 	interfaces.KnowledgeBaseRepository
 	kb *types.KnowledgeBase
@@ -75,8 +81,9 @@ func TestChunkExtractHandle_ModelDeclinedIsSkipNotRetry(t *testing.T) {
 					ID:            "kb1",
 					ExtractConfig: &types.ExtractConfig{Enabled: true},
 				}},
+				knowledgeRepo: graphNativeKnowledgeRepo{},
 				chunkRepo: graphChunkRepo{chunk: &types.Chunk{
-					ID: "c1", KnowledgeBaseID: "kb1", Content: "目录 …… 1",
+					ID: "c1", TenantID: 1, KnowledgeID: "doc", KnowledgeBaseID: "kb1", Content: "目录 …… 1",
 				}},
 			}
 			err := svc.Handle(context.Background(), asynq.NewTask(types.TypeChunkExtract, payload))

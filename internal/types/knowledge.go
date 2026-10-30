@@ -165,6 +165,9 @@ func (order KnowledgeListSortOrder) Valid() bool {
 // It contains metadata about the knowledge source, its processing status,
 // and references to the physical file if applicable.
 type Knowledge struct {
+	// Internal immutable binding prevents managed documents from falling back
+	// to native billing if an asynchronous payload is modified or replayed.
+	ManagedWorkID string `json:"-" gorm:"type:varchar(200);not null;default:''"`
 	// Unique identifier of the knowledge
 	ID string `json:"id"                 gorm:"type:varchar(36);primaryKey"`
 	// Workspace ID

@@ -1124,6 +1124,12 @@ func (h *KnowledgeHandler) ListKnowledge(c *gin.Context) {
 		return
 	}
 
+	if rows, ok := result.Data.([]*types.Knowledge); ok {
+		result.Data = ordinaryKnowledgeRows(rows)
+	} else {
+		c.Error(errors.NewInternalServerError("Knowledge list unavailable"))
+		return
+	}
 	logger.Infof(
 		ctx,
 		"Knowledge list retrieved successfully, knowledge base ID: %s, total: %d",
@@ -1865,6 +1871,10 @@ func (h *KnowledgeHandler) BatchDeleteKnowledge(c *gin.Context) {
 		return
 	}
 	for _, k := range knowledgeList {
+		if k.ManagedWorkID != "" {
+			c.Error(errors.NewForbiddenError("managed knowledge is unavailable"))
+			return
+		}
 		if err := access.RejectMovingKnowledge(k); err != nil {
 			_ = c.Error(err)
 			return
@@ -1948,6 +1958,10 @@ func (h *KnowledgeHandler) ClearKnowledgeBaseContents(c *gin.Context) {
 
 	knowledgeIDs := make([]string, 0, len(knowledgeList))
 	for _, knowledge := range knowledgeList {
+		if knowledge.ManagedWorkID != "" {
+			c.Error(errors.NewForbiddenError("managed knowledge is unavailable"))
+			return
+		}
 		if err := access.RejectMovingKnowledge(knowledge); err != nil {
 			_ = c.Error(err)
 			return
@@ -2178,6 +2192,7 @@ func (h *KnowledgeHandler) GetKnowledgeBatch(c *gin.Context) {
 		knowledges = filterKnowledgesByKBAllowSet(knowledges, allowedKBSet)
 	}
 
+	knowledges = ordinaryKnowledgeRows(knowledges)
 	h.attachLastActivity(ctx, knowledges)
 
 	logger.Infof(ctx, "Batch knowledge retrieval successful, requested count: %d, returned count: %d",
@@ -2835,6 +2850,7 @@ func (h *KnowledgeHandler) SearchKnowledge(c *gin.Context) {
 			c.Error(errors.NewInternalServerError("Failed to search knowledge").WithDetails(err.Error()))
 			return
 		}
+		knowledges = ordinaryKnowledgeRows(knowledges)
 		c.JSON(http.StatusOK, gin.H{
 			"success":  true,
 			"data":     knowledges,
@@ -2860,6 +2876,7 @@ func (h *KnowledgeHandler) SearchKnowledge(c *gin.Context) {
 			c.Error(errors.NewInternalServerError("Failed to search knowledge").WithDetails(err.Error()))
 			return
 		}
+		knowledges = ordinaryKnowledgeRows(knowledges)
 		c.JSON(http.StatusOK, gin.H{
 			"success":  true,
 			"data":     knowledges,
@@ -2877,6 +2894,7 @@ func (h *KnowledgeHandler) SearchKnowledge(c *gin.Context) {
 		return
 	}
 
+	knowledges = ordinaryKnowledgeRows(knowledges)
 	c.JSON(http.StatusOK, gin.H{
 		"success":  true,
 		"data":     knowledges,
@@ -3257,6 +3275,10 @@ func (h *KnowledgeHandler) BatchReparseKnowledge(c *gin.Context) {
 		return
 	}
 	for _, k := range knowledgeList {
+		if k.ManagedWorkID != "" {
+			c.Error(errors.NewForbiddenError("managed knowledge is unavailable"))
+			return
+		}
 		if err := access.RejectMovingKnowledge(k); err != nil {
 			_ = c.Error(err)
 			return
@@ -3366,4 +3388,14 @@ func tenantAPIKeySearchScopes(ctx context.Context) ([]types.KnowledgeSearchScope
 		scopes = append(scopes, types.KnowledgeSearchScope{TenantID: tenantID, KBID: kbID})
 	}
 	return scopes, true
+}
+
+func ordinaryKnowledgeRows(rows []*types.Knowledge) []*types.Knowledge {
+	visible := make([]*types.Knowledge, 0, len(rows))
+	for _, row := range rows {
+		if row != nil && row.ManagedWorkID == "" {
+			visible = append(visible, row)
+		}
+	}
+	return visible
 }

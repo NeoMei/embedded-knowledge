@@ -3073,6 +3073,12 @@ func (s *wikiIngestService) isKnowledgeGone(ctx context.Context, kbID, knowledge
 	if kn == nil {
 		return true, nil
 	}
+	// Managed pilot authorizes indexing and retrieval only. Wiki ingestion and
+	// regeneration do not carry the user's managed model authority, so a
+	// queued/replayed operation must not load or publish its document text.
+	if kn.ManagedWorkID != "" {
+		return true, nil
+	}
 	switch kn.ParseStatus {
 	case types.ParseStatusDeleting, types.ParseStatusCancelled:
 		return true, nil

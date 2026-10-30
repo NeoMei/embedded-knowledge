@@ -40,7 +40,9 @@ func (r *protocolReranker) Rerank(
 	if len(documents) == 0 {
 		return nil, nil
 	}
-	logger.Debugf(ctx, "%s", buildRerankRequestDebug(r.modelName, r.endpoint, query, documents))
+	if !api.ManagedJSONActive(ctx) {
+		logger.Debugf(ctx, "%s", buildRerankRequestDebug(r.modelName, r.endpoint, query, documents))
+	}
 
 	// The query travels in every request, so an over-long one cannot be made
 	// to fit by splitting the documents. SplitBatches charges it to each
@@ -67,7 +69,8 @@ func (r *protocolReranker) Rerank(
 	group.SetLimit(r.concurrency())
 	for i, batch := range batches {
 		group.Go(func() error {
-			out, err := r.inner.Rerank(groupCtx, query, batch.Items)
+			batchCtx := api.WithManagedBatchStart(groupCtx, batch.Start)
+			out, err := r.inner.Rerank(batchCtx, query, batch.Items)
 			if err != nil {
 				return err
 			}

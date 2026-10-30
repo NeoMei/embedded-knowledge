@@ -57,6 +57,9 @@ func (p RetryPolicy) delay(attempt int) time.Duration {
 func (e Endpoint) PostJSONWithRetry(
 	ctx context.Context, url string, body, out any, policy RetryPolicy, label string,
 ) error {
+	if _, ok := managedJSON(ctx); ok {
+		return e.PostJSON(ctx, url, body, out)
+	}
 	return withRetry(ctx, policy, label, func() error {
 		return e.PostJSON(ctx, url, body, out)
 	})

@@ -18,7 +18,6 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
@@ -32,6 +31,9 @@ var (
 	ErrLegacy      = errors.New("managed journal: legacy plaintext requires operator migration")
 	ErrKeyMismatch = errors.New("managed journal: key does not match database")
 	ErrCorrupt     = errors.New("managed journal: expired record failed authentication")
+	// Only a trusted sender may return this when it can prove no upstream IO
+	// occurred. Ambiguous transport failures must never use this marker.
+	ErrDefinitelyNotSent = errors.New("managed journal: request definitely not sent")
 )
 var identity = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,200}$`)
 
@@ -97,13 +99,14 @@ type logicalOperation struct {
 func (logicalOperation) TableName() string { return "managed_model_request_operations" }
 
 type journalMeta struct {
-	ID             int    `gorm:"primaryKey"`
-	Version        int    `gorm:"not null"`
-	Verifier       string `gorm:"size:64;not null"`
-	CursorExpiry   int64
-	CursorRevision int64
-	CursorKey      string `gorm:"size:64"`
-	CursorMAC      string `gorm:"size:64"`
+	ID              int    `gorm:"primaryKey"`
+	Version         int    `gorm:"not null"`
+	Verifier        string `gorm:"size:64;not null"`
+	CallKeyVerifier string `gorm:"size:64"`
+	CursorExpiry    int64
+	CursorRevision  int64
+	CursorKey       string `gorm:"size:64"`
+	CursorMAC       string `gorm:"size:64"`
 }
 
 func (journalMeta) TableName() string { return "managed_model_journal_meta" }
@@ -111,6 +114,7 @@ func (journalMeta) TableName() string { return "managed_model_journal_meta" }
 type Journal struct {
 	db        *gorm.DB
 	macKey    []byte
+	callKey   []byte
 	aead      cipher.AEAD
 	retention time.Duration
 	now       func() time.Time
@@ -118,8 +122,8 @@ type Journal struct {
 
 // Open prepares the isolated journal table; production wiring must coordinate
 // schema deployment before enabling managed models.
-func Open(db *gorm.DB, key []byte, retention time.Duration) (*Journal, error) {
-	if db == nil || len(key) != 32 || retention <= 0 || retention > 30*24*time.Hour {
+func Open(db *gorm.DB, key, callKey []byte, retention time.Duration) (*Journal, error) {
+	if db == nil || len(key) != 32 || len(callKey) != 32 || hmac.Equal(key, callKey) || retention <= 0 || retention > 30*24*time.Hour {
 		return nil, ErrInvalid
 	}
 	// The key is supplied by the caller, never persisted. A silent logger also
@@ -134,9 +138,10 @@ func Open(db *gorm.DB, key []byte, retention time.Duration) (*Journal, error) {
 		return h.Sum(nil)
 	}
 	verifier := hex.EncodeToString(derive("managed-journal:database-verifier:v1"))
-	journal := &Journal{db: db, macKey: derive("managed-journal:input:v1"), retention: retention, now: time.Now}
+	journal := &Journal{db: db, macKey: derive("managed-journal:input:v1"), callKey: append([]byte(nil), callKey...), retention: retention, now: time.Now}
+	callVerifier := journal.callMAC("managed-journal:call-key-verifier:v1", nil)
 	if err := db.Transaction(func(tx *gorm.DB) error {
-		candidate := journalMeta{ID: 1, Version: 1, Verifier: verifier}
+		candidate := journalMeta{ID: 1, Version: 1, Verifier: verifier, CallKeyVerifier: callVerifier}
 		candidate.CursorMAC = journal.cursorMAC(candidate)
 		inserted := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&candidate)
 		if inserted.Error != nil {
@@ -147,6 +152,9 @@ func Open(db *gorm.DB, key []byte, retention time.Duration) (*Journal, error) {
 			return err
 		}
 		if saved.Version != 1 || !hmac.Equal([]byte(saved.Verifier), []byte(verifier)) {
+			return ErrKeyMismatch
+		}
+		if !equalMAC(saved.CallKeyVerifier, callVerifier) {
 			return ErrKeyMismatch
 		}
 		if !equalMAC(saved.CursorMAC, journal.cursorMAC(saved)) {
@@ -195,6 +203,13 @@ func Open(db *gorm.DB, key []byte, retention time.Duration) (*Journal, error) {
 	return journal, nil
 }
 func digest(data []byte) string { h := sha256.Sum256(data); return hex.EncodeToString(h[:]) }
+func (j *Journal) callMAC(label string, value []byte) string {
+	h := hmac.New(sha256.New, j.callKey)
+	_, _ = h.Write([]byte(label))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write(value)
+	return hex.EncodeToString(h.Sum(nil))
+}
 func (j *Journal) mac(label string, value []byte) string {
 	h := hmac.New(sha256.New, j.macKey)
 	_, _ = h.Write([]byte(label))
@@ -219,7 +234,7 @@ func (j *Journal) stateMAC(r record) string {
 	return j.objectMAC("state-v1", []any{r.Key, r.BindingMAC, r.Status, r.ExpiresAt, r.ResultHash})
 }
 func (j *Journal) cursorMAC(m journalMeta) string {
-	return j.objectMAC("retention-cursor-v1", []any{m.ID, m.Version, m.Verifier, m.CursorExpiry, m.CursorKey, m.CursorRevision})
+	return j.objectMAC("retention-cursor-v1", []any{m.ID, m.Version, m.Verifier, m.CallKeyVerifier, m.CursorExpiry, m.CursorKey, m.CursorRevision})
 }
 func equalMAC(a, b string) bool { return len(a) == 64 && hmac.Equal([]byte(a), []byte(b)) }
 func (j *Journal) validState(r record) bool {
@@ -227,7 +242,7 @@ func (j *Journal) validState(r record) bool {
 		return false
 	}
 	switch r.Status {
-	case "PREPARED", "DISPATCHED":
+	case "PREPARED", "DISPATCHED", "NOT_SENT":
 		return r.ExpiresAt == 0 && len(r.Result) == 0 && r.ResultHash == ""
 	case "EXPIRED":
 		return r.ExpiresAt > 0 && len(r.Result) == 0 && r.ResultHash == ""
@@ -270,7 +285,11 @@ func (j *Journal) Execute(ctx context.Context, s Scope, input []byte, send func(
 	operationKey := digest(operationBytes)
 	inputDigest := j.mac("input:"+key, input)
 	planDigest := j.mac("plan:"+operationKey, []byte(s.PlanDigest))
-	candidate := record{Key: key, CallID: "wk_" + uuid.NewString(), TenantID: s.TenantID, ActorID: s.ActorID, AccountID: s.AccountID, TaskID: s.TaskID, LogicalID: s.LogicalID, Operation: s.Operation, Model: s.Model, Batch: s.Batch, InputDigest: inputDigest, Status: "PREPARED"}
+	// The same immutable work and batch must retain its call identity even if
+	// this database is restored to a point before the first local dispatch.
+	// Uniqueness of logical work IDs is an upstream admission invariant.
+	callID := j.callMAC("managed-journal:call-id:v1", keyBytes)
+	candidate := record{Key: key, CallID: "wk_" + callID[:60], TenantID: s.TenantID, ActorID: s.ActorID, AccountID: s.AccountID, TaskID: s.TaskID, LogicalID: s.LogicalID, Operation: s.Operation, Model: s.Model, Batch: s.Batch, InputDigest: inputDigest, Status: "PREPARED"}
 	operation := logicalOperation{Key: operationKey, Model: s.Model, PlanDigest: planDigest}
 	operation.BindingMAC = j.operationMAC(operation)
 	candidate.BindingMAC = j.recordMAC(candidate, operation)
@@ -337,13 +356,14 @@ func (j *Journal) Execute(ctx context.Context, s Scope, input []byte, send func(
 	}
 	// A pre-existing PREPARED record also stays frozen: we cannot prove no
 	// concurrent owner is about to dispatch, nor safely infer a crashed state.
-	if !inserted || current.Status != "PREPARED" {
+	if (!inserted && current.Status != "NOT_SENT") || (current.Status != "PREPARED" && current.Status != "NOT_SENT") {
 		return nil, ErrUnresolved
 	}
 	previousState := current.StateMAC
+	previousStatus := current.Status
 	current.Status = "DISPATCHED"
 	current.StateMAC = j.stateMAC(current)
-	dispatched := j.db.WithContext(ctx).Model(&record{}).Where("request_key = ? AND status = ? AND state_mac = ? AND binding_mac = ?", key, "PREPARED", previousState, current.BindingMAC).Updates(map[string]any{"status": "DISPATCHED", "state_mac": current.StateMAC})
+	dispatched := j.db.WithContext(ctx).Model(&record{}).Where("request_key = ? AND status = ? AND state_mac = ? AND binding_mac = ?", key, previousStatus, previousState, current.BindingMAC).Updates(map[string]any{"status": "DISPATCHED", "state_mac": current.StateMAC})
 	if dispatched.Error != nil {
 		return nil, dispatched.Error
 	}
@@ -351,6 +371,18 @@ func (j *Journal) Execute(ctx context.Context, s Scope, input []byte, send func(
 		return nil, ErrUnresolved
 	}
 	result, err := send(ctx, current.CallID)
+	if errors.Is(err, ErrDefinitelyNotSent) {
+		previousState = current.StateMAC
+		current.Status = "NOT_SENT"
+		current.StateMAC = j.stateMAC(current)
+		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		defer cancel()
+		saved := j.db.WithContext(saveCtx).Model(&record{}).Where("request_key = ? AND status = ? AND state_mac = ? AND binding_mac = ?", key, "DISPATCHED", previousState, current.BindingMAC).Updates(map[string]any{"status": "NOT_SENT", "state_mac": current.StateMAC})
+		if saved.Error != nil || saved.RowsAffected != 1 {
+			return nil, ErrUnresolved
+		}
+		return nil, ErrDefinitelyNotSent
+	}
 	if err != nil || len(result) == 0 || len(result) > maxResult {
 		return nil, ErrUnresolved
 	}
@@ -573,4 +605,78 @@ func (j *Journal) Inspect(ctx context.Context, s Scope, input []byte) (Info, err
 		current.Status = "EXPIRED"
 	}
 	return Info{CallID: current.CallID, Status: current.Status}, nil
+}
+
+// Recover resolves a previously dispatched call using only an authenticated,
+// read-only settled-result lookup. The callback must never submit a provider
+// request. Races with a live writer are resolved by state-MAC CAS.
+func (j *Journal) Recover(ctx context.Context, s Scope, input []byte, read func(context.Context, string) ([]byte, error)) ([]byte, error) {
+	if j == nil || ctx == nil || read == nil {
+		return nil, ErrInvalid
+	}
+	info, err := j.Inspect(ctx, s, input)
+	if err != nil {
+		return nil, err
+	}
+	if info.Status != "DISPATCHED" {
+		return nil, ErrUnresolved
+	}
+	result, err := read(ctx, info.CallID)
+	if err != nil || len(result) == 0 || len(result) > maxResult || ctx.Err() != nil {
+		return nil, ErrUnresolved
+	}
+	again, err := j.Inspect(ctx, s, input)
+	if err != nil || again != info {
+		return nil, ErrUnresolved
+	}
+	keyBytes, _ := json.Marshal([]any{s.LogicalID, s.Operation, s.Batch})
+	key := digest(keyBytes)
+	var current record
+	if err = j.db.WithContext(ctx).First(&current, "request_key = ?", key).Error; err != nil || current.CallID != info.CallID || current.Status != "DISPATCHED" || !j.validState(current) {
+		return nil, ErrUnresolved
+	}
+	opBytes, _ := json.Marshal([]string{s.LogicalID, s.Operation})
+	var operation logicalOperation
+	var owner logicalOwner
+	if j.db.WithContext(ctx).First(&operation, "operation_key = ?", digest(opBytes)).Error != nil ||
+		j.db.WithContext(ctx).First(&owner, "owner_key = ?", digest([]byte(s.LogicalID))).Error != nil ||
+		!equalMAC(operation.BindingMAC, j.operationMAC(operation)) || !equalMAC(owner.BindingMAC, j.ownerMAC(owner)) ||
+		!equalMAC(current.BindingMAC, j.recordMAC(current, operation)) ||
+		owner.LogicalID != s.LogicalID || owner.TenantID != s.TenantID || owner.ActorID != s.ActorID || owner.AccountID != s.AccountID || owner.TaskID != s.TaskID ||
+		current.LogicalID != s.LogicalID || current.TenantID != s.TenantID || current.ActorID != s.ActorID || current.AccountID != s.AccountID || current.TaskID != s.TaskID || current.Operation != s.Operation || current.Model != s.Model || current.Batch != s.Batch ||
+		!hmac.Equal([]byte(current.InputDigest), []byte(j.mac("input:"+key, input))) ||
+		operation.Model != s.Model || !hmac.Equal([]byte(operation.PlanDigest), []byte(j.mac("plan:"+operation.Key, []byte(s.PlanDigest)))) {
+		return nil, ErrUnresolved
+	}
+	original := current
+	current.ExpiresAt = j.now().Add(j.retention).UnixMilli()
+	nonce := make([]byte, j.aead.NonceSize())
+	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, ErrUnresolved
+	}
+	ciphertext := j.aead.Seal(nonce, nonce, result, resultAAD(current))
+	previousState := current.StateMAC
+	current.Status = "COMPLETED"
+	current.Result = ciphertext
+	current.ResultHash = digest(ciphertext)
+	current.StateMAC = j.stateMAC(current)
+	saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	ownerMatch := j.db.Model(&logicalOwner{}).Select("1").Where(map[string]any{"owner_key": owner.OwnerKey, "logical_id": owner.LogicalID, "tenant_id": owner.TenantID, "actor_id": owner.ActorID, "account_id": owner.AccountID, "task_id": owner.TaskID, "binding_mac": owner.BindingMAC})
+	opMatch := j.db.Model(&logicalOperation{}).Select("1").Where(map[string]any{"operation_key": operation.Key, "model": operation.Model, "plan_digest": operation.PlanDigest, "binding_mac": operation.BindingMAC})
+	match := map[string]any{"request_key": original.Key, "call_id": original.CallID, "tenant_id": original.TenantID, "actor_id": original.ActorID, "account_id": original.AccountID, "task_id": original.TaskID, "logical_id": original.LogicalID, "operation": original.Operation, "model": original.Model, "batch": original.Batch, "input_digest": original.InputDigest, "binding_mac": original.BindingMAC, "state_mac": previousState, "status": "DISPATCHED"}
+	update := j.db.WithContext(saveCtx).Model(&record{})
+	if j.db.Dialector.Name() == "mysql" {
+		for column, value := range match {
+			if text, ok := value.(string); ok {
+				update = update.Where("BINARY "+column+" = BINARY ?", text)
+				delete(match, column)
+			}
+		}
+	}
+	saved := update.Where(match).Where("EXISTS (?)", ownerMatch).Where("EXISTS (?)", opMatch).Updates(map[string]any{"status": "COMPLETED", "result": ciphertext, "result_hash": current.ResultHash, "expires_at": current.ExpiresAt, "state_mac": current.StateMAC})
+	if saved.Error != nil || saved.RowsAffected != 1 {
+		return nil, ErrUnresolved
+	}
+	return append([]byte(nil), result...), nil
 }

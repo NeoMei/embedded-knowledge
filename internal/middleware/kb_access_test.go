@@ -571,3 +571,36 @@ func TestRequireKBAccess_InvalidAgentSourceTenantID(t *testing.T) {
 	require.True(t, c.IsAborted())
 	require.NotEmpty(t, c.Errors)
 }
+
+type managedResolverKnowledge struct {
+	value *types.Knowledge
+	err   error
+}
+
+func (s managedResolverKnowledge) GetKnowledgeByIDOnly(context.Context, string) (*types.Knowledge, error) {
+	return s.value, s.err
+}
+
+type managedResolverChunk struct{ value *types.Chunk }
+
+func (s managedResolverChunk) GetChunkByIDOnly(context.Context, string) (*types.Chunk, error) {
+	return s.value, nil
+}
+func TestManagedKnowledgeResolversDenyUnsignedAccess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("GET", "/", nil)
+	c.Params = gin.Params{{Key: "id", Value: "doc"}}
+	knowledge := &types.Knowledge{ID: "doc", TenantID: 1, KnowledgeBaseID: "kb", ManagedWorkID: "work"}
+	_, err := KBIDFromKnowledgeIDParam("id", managedResolverKnowledge{value: knowledge})(c)
+	require.Error(t, err)
+	_, err = KBIDFromChunkIDAndKnowledgeParam("id", managedResolverChunk{value: &types.Chunk{TenantID: 1, KnowledgeID: "doc", KnowledgeBaseID: "kb"}}, managedResolverKnowledge{value: knowledge})(c)
+	require.Error(t, err)
+	knowledge.ManagedWorkID = ""
+	kb, err := KBIDFromKnowledgeIDParam("id", managedResolverKnowledge{value: knowledge})(c)
+	require.NoError(t, err)
+	require.Equal(t, "kb", kb)
+	kb, err = KBIDFromChunkIDAndKnowledgeParam("id", managedResolverChunk{value: &types.Chunk{TenantID: 1, KnowledgeID: "doc", KnowledgeBaseID: "kb"}}, managedResolverKnowledge{value: knowledge})(c)
+	require.NoError(t, err)
+	require.Equal(t, "kb", kb)
+}

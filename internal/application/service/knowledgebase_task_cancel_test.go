@@ -113,6 +113,7 @@ func TestDeleteKnowledgeBaseForwardsDataSourceTaskScope(t *testing.T) {
 	dsRepo := newKBDeleteDSRepo(kbID, &types.DataSource{ID: "datasource-1", KnowledgeBaseID: kbID})
 	svc := &knowledgeBaseService{
 		repo:          kbRepo,
+		kgRepo:        emptyKBKnowledgeRepo{},
 		asynqClient:   enqueuer,
 		taskInspector: inspector,
 		dsRepo:        dsRepo,
@@ -151,6 +152,7 @@ func TestDeleteKnowledgeBaseCancelsQueuedTasksBestEffort(t *testing.T) {
 			enqueuer := &recordingKBDeleteEnqueuer{}
 			svc := &knowledgeBaseService{
 				repo:            kbRepo,
+				kgRepo:          emptyKBKnowledgeRepo{},
 				asynqClient:     enqueuer,
 				taskInspector:   inspector,
 				taskPendingRepo: pendingRepo,
@@ -185,6 +187,7 @@ func TestProcessKBDeleteRepeatsQueueCleanup(t *testing.T) {
 	inspector := &recordingKBTaskInspector{}
 	pendingRepo := &recordingKBPendingRepo{}
 	svc := &knowledgeBaseService{
+		repo:            kbDeleteStatusRepo{deleted: true},
 		kgRepo:          emptyKBKnowledgeRepo{},
 		taskInspector:   inspector,
 		taskPendingRepo: pendingRepo,
@@ -264,6 +267,7 @@ func (kbCleanupEmbedder) BatchEmbedWithPool(
 func TestProcessKBDeleteCollectsKnowledgeIDsForEveryScrub(t *testing.T) {
 	inspector := &recordingKBTaskInspector{}
 	svc := &knowledgeBaseService{
+		repo: kbDeleteStatusRepo{deleted: true},
 		kgRepo: populatedKBKnowledgeRepo{items: []*types.Knowledge{
 			{ID: "knowledge-1", KnowledgeBaseID: "kb-1", EmbeddingModelID: "model-1"},
 			{ID: "knowledge-2", KnowledgeBaseID: "kb-1", EmbeddingModelID: "model-1"},
@@ -335,6 +339,7 @@ func TestProcessKBDeleteEngineResolutionFailureRetries(t *testing.T) {
 		{ID: "knowledge-1", KnowledgeBaseID: "kb-1", EmbeddingModelID: "model-1"},
 	}}}
 	svc := &knowledgeBaseService{
+		repo:           kbDeleteStatusRepo{deleted: true},
 		kgRepo:         repo,
 		chunkRepo:      kbCleanupChunkRepo{},
 		modelService:   kbCleanupModelService{},
@@ -361,6 +366,7 @@ func TestProcessKBDeleteUnavailableStoreRetries(t *testing.T) {
 		{ID: "knowledge-1", KnowledgeBaseID: "kb-1", EmbeddingModelID: "model-1"},
 	}}}
 	svc := &knowledgeBaseService{
+		repo:           kbDeleteStatusRepo{deleted: true},
 		kgRepo:         repo,
 		chunkRepo:      kbCleanupChunkRepo{},
 		modelService:   kbCleanupModelService{},

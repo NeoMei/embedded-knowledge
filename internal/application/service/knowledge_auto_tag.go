@@ -140,6 +140,9 @@ func (s *KnowledgeAutoTagService) Handle(ctx context.Context, task *asynq.Task) 
 	if knowledge == nil || knowledge.TenantID != payload.TenantID || knowledge.KnowledgeBaseID != payload.KnowledgeBaseID {
 		return skip("knowledge_not_in_scope", nil)
 	}
+	if knowledge.ManagedWorkID != "" {
+		return skip("managed_enrichment_not_authorized", nil)
+	}
 	if knowledge.ParseStatus == types.ParseStatusCancelled ||
 		knowledge.ParseStatus == types.ParseStatusDeleting ||
 		knowledge.ParseStatus == types.ParseStatusFailed {

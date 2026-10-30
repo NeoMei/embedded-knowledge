@@ -611,7 +611,7 @@ func (g *rbacGuards) KBAccessWriteFromKnowledgeIDParam(param string) gin.Handler
 // /chunks/by-id/:id read routes.
 func (g *rbacGuards) KBAccessReadFromChunkIDParam(param string) gin.HandlerFunc {
 	return middleware.RequireKBAccess(
-		middleware.KBIDFromChunkIDParam(param, g.chunkService),
+		middleware.KBIDFromChunkIDAndKnowledgeParam(param, g.chunkService, g.knowledgeService),
 		types.OrgRoleViewer,
 		g.kbService,
 		g.kbShareService,
@@ -625,7 +625,7 @@ func (g *rbacGuards) KBAccessReadFromChunkIDParam(param string) gin.HandlerFunc 
 // address the chunk via /chunks/by-id/:id.
 func (g *rbacGuards) KBAccessWriteFromChunkIDParam(param string) gin.HandlerFunc {
 	return middleware.RequireKBAccess(
-		middleware.KBIDFromChunkIDParam(param, g.chunkService),
+		middleware.KBIDFromChunkIDAndKnowledgeParam(param, g.chunkService, g.knowledgeService),
 		types.OrgRoleEditor,
 		g.kbService,
 		g.kbShareService,

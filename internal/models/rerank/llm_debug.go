@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/models/api"
 )
 
 // debugReranker wraps a Reranker with LLM debug logging.
@@ -28,7 +29,7 @@ func (d *debugReranker) GetModelID() string   { return d.inner.GetModelID() }
 func (d *debugReranker) MaxPassageRunes(query string) int { return MaxPassageRunes(d.inner, query) }
 
 func logRerankDebug(ctx context.Context, model string, query string, documents []string, results []RankResult, callErr error, dur time.Duration) {
-	if !logger.LLMDebugEnabled() {
+	if api.ManagedJSONActive(ctx) || !logger.LLMDebugEnabled() {
 		return
 	}
 

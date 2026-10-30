@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Tencent/WeKnora/internal/managedcapability"
 	"github.com/Tencent/WeKnora/internal/models/api"
 )
 
@@ -207,6 +208,12 @@ func (c *Client) postMessages(
 }
 
 func (c *Client) post(ctx context.Context, body map[string]any, want int) ([][]float32, error) {
+	// The certified managed Ali embedding route does not implement vLLM's
+	// extension. In particular, never let a generic-model default truncate the
+	// already-authorized knowledge input before it reaches the gateway.
+	if api.ManagedJSONActive(ctx) && c.cfg.Endpoint.Model == managedcapability.EmbeddingModel {
+		delete(body, "truncate_prompt_tokens")
+	}
 	var decoded response
 	err := c.cfg.Endpoint.PostJSONWithRetry(ctx, c.url(), body, &decoded, c.cfg.Retry, "embedding")
 	if err != nil {
@@ -215,10 +222,24 @@ func (c *Client) post(ctx context.Context, body map[string]any, want int) ([][]f
 	if decoded.Error != nil && decoded.Error.Message != "" {
 		return nil, fmt.Errorf("embedding API error: %s", decoded.Error.Message)
 	}
-	return api.PlaceEmbeddings(want, len(decoded.Data), func(i int) (int, []float32) {
+	vectors, err := api.PlaceEmbeddings(want, len(decoded.Data), func(i int) (int, []float32) {
 		if decoded.Data[i].Index == nil {
 			return i, decoded.Data[i].Embedding
 		}
 		return *decoded.Data[i].Index, decoded.Data[i].Embedding
 	})
+	if err != nil {
+		return nil, err
+	}
+	if api.ManagedJSONActive(ctx) {
+		if c.cfg.Endpoint.Model != managedcapability.EmbeddingModel {
+			return nil, fmt.Errorf("managed embedding model mismatch")
+		}
+		for _, vector := range vectors {
+			if len(vector) != managedcapability.EmbeddingDimensions {
+				return nil, fmt.Errorf("managed embedding dimension mismatch")
+			}
+		}
+	}
+	return vectors, nil
 }

@@ -299,6 +299,8 @@ type ExtractChunkPayload struct {
 // DocumentProcessPayload represents the document process task payload
 type DocumentProcessPayload struct {
 	TracingContext
+	// ManagedWorkID is server-owned work identity; it never contains a token.
+	ManagedWorkID            string   `json:"managed_work_id,omitempty"`
 	RequestId                string   `json:"request_id"`
 	TenantID                 uint64   `json:"tenant_id"`
 	KnowledgeID              string   `json:"knowledge_id"`

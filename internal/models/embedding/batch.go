@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/models/utils"
 	"github.com/panjf2000/ants/v2"
 )
@@ -42,7 +43,7 @@ func (e *batchEmbedder) BatchEmbedWithPool(ctx context.Context, model Embedder, 
 	})
 
 	// Function to process each document chunk
-	processChunk := func(texts []*textEmbedding) func() {
+	processChunk := func(texts []*textEmbedding, start int) func() {
 		return func() {
 			defer wg.Done()
 			// If an error has already occurred, don't continue processing
@@ -53,7 +54,8 @@ func (e *batchEmbedder) BatchEmbedWithPool(ctx context.Context, model Embedder, 
 				return
 			}
 			// Embed text
-			embedding, err := model.BatchEmbed(ctx, utils.MapSlice(texts, func(text *textEmbedding) string {
+			chunkCtx := api.WithManagedBatchStart(ctx, start)
+			embedding, err := model.BatchEmbed(chunkCtx, utils.MapSlice(texts, func(text *textEmbedding) string {
 				return text.text
 			}))
 			if err != nil {
@@ -85,9 +87,9 @@ func (e *batchEmbedder) BatchEmbedWithPool(ctx context.Context, model Embedder, 
 
 	// Submit all tasks to the goroutine pool
 	var submitErr error
-	for _, texts := range utils.ChunkSlice(textEmbeddings, batchSize) {
+	for index, texts := range utils.ChunkSlice(textEmbeddings, batchSize) {
 		wg.Add(1)
-		if err := e.pool.Submit(processChunk(texts)); err != nil {
+		if err := e.pool.Submit(processChunk(texts, index*batchSize)); err != nil {
 			// This job was not accepted and will never call Done. Drain every
 			// accepted job before reporting the submission failure.
 			wg.Done()

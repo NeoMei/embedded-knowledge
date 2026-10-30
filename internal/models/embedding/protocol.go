@@ -155,7 +155,9 @@ func (e *protocolEmbedder) BatchEmbed(ctx context.Context, texts []string) ([][]
 	// here would multiply past both, and a one-text-per-request vendor would
 	// turn every pool chunk into a burst.
 	for _, batch := range batches {
-		vectors, err := e.inner.Embed(ctx, batch.Items, kind)
+		batchStart, _ := api.ManagedBatchStart(ctx)
+		batchCtx := api.WithManagedBatchStart(ctx, batchStart+batch.Start)
+		vectors, err := e.inner.Embed(batchCtx, batch.Items, kind)
 		if err != nil {
 			return nil, err
 		}

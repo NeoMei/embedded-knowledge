@@ -36,6 +36,9 @@ func (s *knowledgeService) reparseTaskScope(
 			(kbID != "" && row.KnowledgeBaseID != kbID) {
 			return ctx, nil, fmt.Errorf("reparse task binding changed: %w", asynq.SkipRetry)
 		}
+		if row.ManagedWorkID != "" {
+			return ctx, nil, fmt.Errorf("managed reparse task unavailable: %w", asynq.SkipRetry)
+		}
 		if err := access.RejectMovingKnowledge(row); err != nil {
 			return ctx, nil, fmt.Errorf("reparse task document unavailable: %v: %w", err, asynq.SkipRetry)
 		}

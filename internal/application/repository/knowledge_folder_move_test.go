@@ -57,11 +57,13 @@ func TestUpdateKnowledgeFolderPath(t *testing.T) {
 
 func TestRenameKnowledgeFolderPath(t *testing.T) {
 	db := setupKnowledgeTestDB(t)
+	require.NoError(t, db.Exec("CREATE TABLE knowledge_bases (id TEXT PRIMARY KEY, tenant_id INTEGER, updated_at DATETIME, deleted_at DATETIME)").Error)
 	repo := NewKnowledgeRepository(db).(*knowledgeRepository)
 	ctx := context.Background()
 
 	const tenantID = uint64(1)
 	kbID := uuid.New().String()
+	require.NoError(t, db.Exec("INSERT INTO knowledge_bases(id, tenant_id) VALUES (?, ?)", kbID, tenantID).Error)
 
 	root := insertKnowledgeInFolder(t, db, tenantID, kbID, "", "readme.md")
 	docs := insertKnowledgeInFolder(t, db, tenantID, kbID, "docs", "intro.md")
@@ -98,11 +100,13 @@ func TestRenameKnowledgeFolderPath(t *testing.T) {
 
 func TestRenameKnowledgeFolderPathUnderscoreInPath(t *testing.T) {
 	db := setupKnowledgeTestDB(t)
+	require.NoError(t, db.Exec("CREATE TABLE knowledge_bases (id TEXT PRIMARY KEY, tenant_id INTEGER, updated_at DATETIME, deleted_at DATETIME)").Error)
 	repo := NewKnowledgeRepository(db).(*knowledgeRepository)
 	ctx := context.Background()
 
 	const tenantID = uint64(1)
 	kbID := uuid.New().String()
+	require.NoError(t, db.Exec("INSERT INTO knowledge_bases(id, tenant_id) VALUES (?, ?)", kbID, tenantID).Error)
 
 	parent := insertKnowledgeInFolder(t, db, tenantID, kbID, "my_docs", "intro.md")
 	child := insertKnowledgeInFolder(t, db, tenantID, kbID, "my_docs/spec", "design.md")
@@ -112,4 +116,24 @@ func TestRenameKnowledgeFolderPathUnderscoreInPath(t *testing.T) {
 	assert.Equal(t, int64(2), affected)
 	assert.Equal(t, "handbook", folderPathOf(t, db, parent))
 	assert.Equal(t, "handbook/spec", folderPathOf(t, db, child))
+}
+
+func TestManagedFolderCountsAndRename(t *testing.T) {
+	db := setupKnowledgeTestDB(t)
+	require.NoError(t, db.Exec("CREATE TABLE knowledge_bases (id TEXT PRIMARY KEY, tenant_id INTEGER, updated_at DATETIME, deleted_at DATETIME)").Error)
+	require.NoError(t, db.Exec("INSERT INTO knowledge_bases(id, tenant_id) VALUES (?, ?)", "kb", 1).Error)
+	repo := NewKnowledgeRepository(db).(*knowledgeRepository)
+	native := insertKnowledgeInFolder(t, db, 1, "kb", "docs", "native.md")
+	managed := insertKnowledgeInFolder(t, db, 1, "kb", "docs/sub", "managed.md")
+	require.NoError(t, db.Exec("UPDATE knowledges SET managed_work_id = ? WHERE id = ?", "work", managed).Error)
+	counts, err := repo.ListKnowledgeFolderCounts(context.Background(), 1, "kb")
+	require.NoError(t, err)
+	require.Len(t, counts, 1)
+	assert.Equal(t, "docs", counts[0].FolderPath)
+	assert.Equal(t, int64(1), counts[0].Count)
+	affected, err := repo.RenameKnowledgeFolderPath(context.Background(), 1, "kb", "docs", "new")
+	require.Error(t, err)
+	assert.Zero(t, affected)
+	assert.Equal(t, "docs", folderPathOf(t, db, native))
+	assert.Equal(t, "docs/sub", folderPathOf(t, db, managed))
 }

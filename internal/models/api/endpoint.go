@@ -154,6 +154,29 @@ func (e Endpoint) Do(req *http.Request) (*http.Response, error) {
 // marshalling, SSRF, transport, non-2xx, decoding — returns an error, so a
 // caller cannot mistake an empty result for a successful empty answer.
 func (e Endpoint) PostJSON(ctx context.Context, url string, body, out any) error {
+	if dispatch, ok := managedJSON(ctx); ok {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("marshal managed request: %w", err)
+		}
+		if len(data) == 0 || len(data) > 8<<20 {
+			return fmt.Errorf("managed request is too large")
+		}
+		raw, err := dispatch(ctx, e.Model, url, data)
+		if err != nil {
+			return err
+		}
+		if len(raw) == 0 || len(raw) > 16<<20 {
+			return fmt.Errorf("managed response is invalid")
+		}
+		if out == nil {
+			return nil
+		}
+		if err := json.Unmarshal(raw, out); err != nil {
+			return fmt.Errorf("decode managed response: %w", err)
+		}
+		return nil
+	}
 	req, _, err := e.NewRequest(ctx, url, body, false)
 	if err != nil {
 		return err

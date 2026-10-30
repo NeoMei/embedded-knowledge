@@ -48,6 +48,7 @@ var (
 // knowledgeService implements the knowledge service interface
 // service 实现知识服务接口
 type knowledgeService struct {
+	managedWorker   managedWorkerRuntime
 	config          *config.Config
 	retrieveEngine  interfaces.RetrieveEngineRegistry
 	ownership       retriever.TenantStoreOwnership
@@ -94,6 +95,7 @@ const (
 
 // NewKnowledgeService creates a new knowledge service instance
 func NewKnowledgeService(
+	db *gorm.DB,
 	config *config.Config,
 	repo interfaces.KnowledgeRepository,
 	documentReader interfaces.DocumentReader,
@@ -122,7 +124,11 @@ func NewKnowledgeService(
 	spanTracker SpanTracker,
 	audit interfaces.AuditLogService,
 ) (interfaces.KnowledgeService, error) {
-	return &knowledgeService{
+	managed, err := pilotWorkerFromEnvironment(db)
+	if err != nil {
+		return nil, err
+	}
+	result := &knowledgeService{
 		config:          config,
 		repo:            repo,
 		kbService:       kbService,
@@ -150,7 +156,11 @@ func NewKnowledgeService(
 		taskPendingRepo: taskPendingRepo,
 		spanTracker:     spanTracker,
 		audit:           audit,
-	}, nil
+	}
+	if managed != nil {
+		result.managedWorker = managed
+	}
+	return result, nil
 }
 
 // tracker returns a usable SpanTracker — falls back to a no-op when the
@@ -794,6 +804,10 @@ func (s *knowledgeService) GetKnowledgeFile(ctx context.Context, id string) (io.
 	knowledge, err := s.repo.GetKnowledgeByID(ctx, tenantID, id)
 	if err != nil {
 		return nil, "", err
+	}
+
+	if knowledge == nil || knowledge.ManagedWorkID != "" {
+		return nil, "", ErrManagedWorkerUnavailable
 	}
 
 	// Manual knowledge stores content in Metadata — stream it directly as a .md file.

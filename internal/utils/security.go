@@ -956,8 +956,9 @@ var (
 	// atomic pointer below takes over and this Once is never observed
 	// again — we keep it for tests (resetSSRFWhitelistForTest) and the
 	// rare deployment that runs without DB-backed system_settings.
-	ssrfWhitelistOnce sync.Once
-	ssrfWhitelist     *ssrfWhitelistConfig
+	ssrfWhitelistOnce       sync.Once
+	ssrfWhitelist           *ssrfWhitelistConfig
+	ssrfWhitelistFallbackMu sync.Mutex
 
 	// ssrfWhitelistAtomic is the runtime-tunable whitelist source.
 	// SystemSettingService writes here at preload, on every Update,
@@ -989,6 +990,8 @@ func loadSSRFWhitelist() *ssrfWhitelistConfig {
 	if cur := ssrfWhitelistAtomic.Load(); cur != nil {
 		return cur
 	}
+	ssrfWhitelistFallbackMu.Lock()
+	defer ssrfWhitelistFallbackMu.Unlock()
 	ssrfWhitelistOnce.Do(func() {
 		raw := os.Getenv("SSRF_WHITELIST")
 		// SSRF_WHITELIST_EXTRA is merged in addition to SSRF_WHITELIST so that
@@ -1260,6 +1263,8 @@ func CheckDialWhitelistOnly(host string) error {
 // cached via the first sync.Once.Do(). NOT for production use — the ForTest
 // suffix is the contract.
 func ResetSSRFWhitelistForTest() {
+	ssrfWhitelistFallbackMu.Lock()
+	defer ssrfWhitelistFallbackMu.Unlock()
 	ssrfWhitelistOnce = sync.Once{}
 	ssrfWhitelist = nil
 	ssrfWhitelistAtomic.Store(nil)

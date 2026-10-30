@@ -19,7 +19,7 @@ func fixture(t *testing.T) (*Verifier, ed25519.PrivateKey, Claims, Binding, time
 	now := time.Unix(1793290000, 0).UTC()
 	v, err := NewVerifier("fixture-issuer", "weknora-document", map[string]ed25519.PublicKey{"key-1": pub}, time.Hour, func() time.Time { return now })
 	require.NoError(t, err)
-	binding := Binding{TenantID: 42, ActorID: "actor", AccountID: "payer", TaskID: "task", WorkID: "work-unique", GrantID: "grant-unique", KnowledgeBaseID: "kb", KnowledgeID: "doc", Purpose: "document-ingest", InputDigest: strings.Repeat("a", 64)}
+	binding := Binding{EmbeddingModel: EmbeddingModel, EmbeddingSpace: EmbeddingSpace, TenantID: 42, ActorID: "actor", AccountID: "payer", TaskID: "task", WorkID: "work-unique", GrantID: "grant-unique", KnowledgeBaseID: "kb", KnowledgeID: "doc", Purpose: "document-ingest", InputDigest: strings.Repeat("a", 64)}
 	claims := Claims{Issuer: "fixture-issuer", Audience: "weknora-document", Binding: binding, IssuedAt: now.Add(-time.Minute).Unix(), ExpiresAt: now.Add(time.Minute).Unix()}
 	return v, priv, claims, binding, now
 }
@@ -101,7 +101,7 @@ func TestVerifierCopiesPublicKeysAndCannotBeReconfiguredByCaller(t *testing.T) {
 	keys := map[string]ed25519.PublicKey{"key-1": public}
 	v, err := NewVerifier("fixture-issuer", "weknora-document", keys, time.Hour, func() time.Time { return now })
 	require.NoError(t, err)
-	binding := Binding{TenantID: 1, ActorID: "actor", AccountID: "account", TaskID: "task", WorkID: "work", GrantID: "grant", KnowledgeBaseID: "kb", KnowledgeID: "doc", Purpose: "document-ingest", InputDigest: strings.Repeat("a", 64)}
+	binding := Binding{EmbeddingModel: EmbeddingModel, EmbeddingSpace: EmbeddingSpace, TenantID: 1, ActorID: "actor", AccountID: "account", TaskID: "task", WorkID: "work", GrantID: "grant", KnowledgeBaseID: "kb", KnowledgeID: "doc", Purpose: "document-ingest", InputDigest: strings.Repeat("a", 64)}
 	claims := Claims{Issuer: "fixture-issuer", Audience: "weknora-document", Binding: binding, IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Minute).Unix()}
 	token := sign(t, private, "key-1", claims)
 	for i := range public {
@@ -110,4 +110,31 @@ func TestVerifierCopiesPublicKeysAndCannotBeReconfiguredByCaller(t *testing.T) {
 	delete(keys, "key-1")
 	_, err = v.Verify(token, binding)
 	require.NoError(t, err)
+}
+
+func TestActiveAuthorizationBindsNonceActorAndExpiry(t *testing.T) {
+	verifier, key, _, binding, now := fixture(t)
+	nonce := strings.Repeat("c", 64)
+	claims := ActiveClaims{Issuer: "fixture-issuer", Audience: "weknora-document", Binding: binding, Nonce: nonce, IssuedAt: now.Unix(), ExpiresAt: now.Add(30 * time.Second).Unix()}
+	signActive := func(c ActiveClaims) string {
+		data, err := json.Marshal(c)
+		require.NoError(t, err)
+		prefix := "weknora-auth-v1.key-1." + base64.RawURLEncoding.EncodeToString(data)
+		return prefix + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(key, []byte(prefix)))
+	}
+	token := signActive(claims)
+	_, err := verifier.VerifyActive(token, binding, nonce)
+	require.NoError(t, err)
+	_, err = verifier.VerifyActive(token, binding, strings.Repeat("d", 64))
+	require.Error(t, err)
+	wrong := binding
+	wrong.ActorID = "other"
+	_, err = verifier.VerifyActive(token, wrong, nonce)
+	require.Error(t, err)
+	claims.ExpiresAt = now.Add(31 * time.Second).Unix()
+	_, err = verifier.VerifyActive(signActive(claims), binding, nonce)
+	require.Error(t, err)
+	claims.ExpiresAt = now.Unix()
+	_, err = verifier.VerifyActive(signActive(claims), binding, nonce)
+	require.Error(t, err)
 }

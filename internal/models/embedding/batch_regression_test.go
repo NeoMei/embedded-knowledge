@@ -7,6 +7,7 @@ import (
 	"testing"
 	"testing/synctest"
 
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/panjf2000/ants/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -94,3 +95,38 @@ func (orderedBatchEmbedder) BatchEmbedWithPool(context.Context, Embedder, []stri
 func (orderedBatchEmbedder) GetModelName() string { return "test" }
 func (orderedBatchEmbedder) GetModelID() string   { return "test" }
 func (orderedBatchEmbedder) GetDimensions() int   { return 1 }
+
+type managedOrdinalEmbedder struct{ indices chan int }
+
+func (e *managedOrdinalEmbedder) BatchEmbed(ctx context.Context, texts []string) ([][]float32, error) {
+	index, ok := api.ManagedBatchStart(ctx)
+	if !ok {
+		return nil, errors.New("missing batch index")
+	}
+	e.indices <- index
+	result := make([][]float32, len(texts))
+	for i := range result {
+		result[i] = []float32{float32(index)}
+	}
+	return result, nil
+}
+func (e *managedOrdinalEmbedder) Embed(context.Context, string) ([]float32, error) {
+	return nil, errors.New("unexpected")
+}
+func (e *managedOrdinalEmbedder) BatchEmbedWithPool(context.Context, Embedder, []string) ([][]float32, error) {
+	return nil, errors.New("unexpected")
+}
+func (e *managedOrdinalEmbedder) GetModelName() string { return "test" }
+func (e *managedOrdinalEmbedder) GetModelID() string   { return "test" }
+func (e *managedOrdinalEmbedder) GetDimensions() int   { return 1 }
+func TestManagedBatchUsesStableOffsetsForDuplicateText(t *testing.T) {
+	t.Setenv("BATCH_EMBED_SIZE", "1")
+	pool, err := ants.NewPool(2)
+	require.NoError(t, err)
+	defer pool.Release()
+	model := &managedOrdinalEmbedder{indices: make(chan int, 2)}
+	ctx := api.WithManagedJSON(context.Background(), func(context.Context, string, string, []byte) ([]byte, error) { return nil, errors.New("not invoked") })
+	vectors, err := NewBatchEmbedder(pool).BatchEmbedWithPool(ctx, model, []string{"same", "same"})
+	require.NoError(t, err)
+	require.Equal(t, [][]float32{{0}, {1}}, vectors)
+}

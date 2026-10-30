@@ -29,6 +29,13 @@ func (r *refKnowledgeRepoStub) GetKnowledgeByFilePath(
 	return r.existing, nil
 }
 
+func (r *refKnowledgeRepoStub) CreateReferenceLocked(ctx context.Context, knowledge *types.Knowledge) (*types.Knowledge, bool, error) {
+	if err := r.CreateKnowledge(ctx, knowledge); err != nil {
+		return nil, false, err
+	}
+	return knowledge, true, nil
+}
+
 func (r *refKnowledgeRepoStub) CreateKnowledge(ctx context.Context, knowledge *types.Knowledge) error {
 	r.createCalls++
 	copied := *knowledge

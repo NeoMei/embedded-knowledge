@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/models/api"
 )
 
 // debugEmbedder wraps an Embedder with LLM debug logging.
@@ -72,7 +73,7 @@ func singleToDouble(v []float32) [][]float32 {
 }
 
 func logEmbeddingDebug(ctx context.Context, model string, inputs []string, outputs [][]float32, callErr error, dur time.Duration) {
-	if !logger.LLMDebugEnabled() {
+	if api.ManagedJSONActive(ctx) || !logger.LLMDebugEnabled() {
 		return
 	}
 

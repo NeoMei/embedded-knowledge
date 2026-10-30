@@ -56,7 +56,7 @@ var sensitiveFieldRegex = regexp.MustCompile(
 		`refresh[_-]?token|next[_-]?token|device[_-]?token|pending[_-]?token|pairing[_-]?link|` +
 		`id[_-]?token|authorization|auth[_-]?token|api[_-]?key|` +
 		`api[_-]?secret|secret[_-]?key|client[_-]?secret|private[_-]?key|secret|` +
-		`authorization[_-]?url|authorization[_-]?attempt|assertion)")\s*:\s*"[^"]*"`,
+		`authorization[_-]?url|authorization[_-]?attempt|assertion|capability)")\s*:\s*"[^"]*"`,
 )
 
 // sanitizeBody 清理敏感信息
@@ -192,6 +192,8 @@ func Logger() gin.HandlerFunc {
 		// Keep access metadata, but never read or buffer these request/response bodies.
 		browserTraffic := strings.HasPrefix(path, "/api/v1/local-browser/") ||
 			path == "/api/v1/me/browser" || strings.HasSuffix(path, "/local-browser")
+		managedKnowledgeTraffic := strings.HasPrefix(path, "/api/v1/knowledge-bases/") && (strings.HasSuffix(path, "/managed-ref") || strings.HasSuffix(path, "/managed-hybrid-search") || strings.HasSuffix(path, "/managed-status"))
+		browserTraffic = browserTraffic || managedKnowledgeTraffic
 		// 读取请求体（在Next之前读取，因为Next会消费body）
 		var requestBody string
 		if !browserTraffic && (c.Request.Method == "POST" || c.Request.Method == "PUT" || c.Request.Method == "PATCH") {

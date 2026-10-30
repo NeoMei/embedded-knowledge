@@ -127,6 +127,9 @@ func (s *knowledgeService) planKnowledgeDelete(ctx context.Context, ids []string
 			}
 			return nil, apperrors.NewNotFoundError("knowledge not found")
 		}
+		if row.ManagedWorkID != "" {
+			return nil, ErrManagedWorkerUnavailable
+		}
 		if isCleanup && cleanup.bindings[id] != row.KnowledgeBaseID {
 			return nil, apperrors.NewForbiddenError("cleanup resource binding changed")
 		}

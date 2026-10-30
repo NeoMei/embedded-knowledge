@@ -7,6 +7,8 @@ import (
 	"github.com/Tencent/WeKnora/internal/application/service/retriever"
 	apperrors "github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/managedcapability"
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/models/embedding"
 	"github.com/Tencent/WeKnora/internal/tracing/langfuse"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -42,6 +44,9 @@ func (s *knowledgeBaseService) GetQueryEmbedding(ctx context.Context, kbID strin
 		return nil, err
 	}
 
+	if api.ManagedJSONActive(ctx) && (embeddingModel == nil || embeddingModel.GetModelName() != managedcapability.EmbeddingModel || embeddingModel.GetDimensions() != managedcapability.EmbeddingDimensions) {
+		return nil, ErrManagedWorkerUnavailable
+	}
 	vector, err := embeddingModel.Embed(types.WithEmbedQuery(ctx), queryText)
 	if err != nil {
 		return nil, err
@@ -164,8 +169,9 @@ func (s *knowledgeBaseService) hybridSearchCandidates(ctx context.Context,
 	// QueryText is user-controlled; sanitize before logging to prevent
 	// CR/LF/tab log injection. Matches the handler-layer sanitization at
 	// handler/knowledgebase.go.
-	logger.Infof(ctx, "Hybrid search parameters, knowledge base IDs: %v, query text: %s",
-		searchKBIDs, secutils.SanitizeForLog(params.QueryText))
+	if !api.ManagedJSONActive(ctx) {
+		logger.Infof(ctx, "Hybrid search parameters, knowledge base IDs: %v, query text: %s", searchKBIDs, secutils.SanitizeForLog(params.QueryText))
+	}
 
 	tenantInfo, _ := types.TenantInfoFromContext(ctx)
 
@@ -266,10 +272,14 @@ func (s *knowledgeBaseService) hybridSearchCandidates(ctx context.Context,
 	// Execute retrieval with fan-out + score normalization (multi-store
 	// only) and a langfuse span around the entire retrieve step.
 	logger.Infof(ctx, "Starting multi-store retrieval, group count: %d", len(groups))
+	traceQuery := params.QueryText
+	if api.ManagedJSONActive(ctx) {
+		traceQuery = "[redacted]"
+	}
 	retrieveCtx, retrieveSpan := langfuse.GetManager().StartSpan(ctx, langfuse.SpanOptions{
 		Name: "retrieve",
 		Input: map[string]interface{}{
-			"query_text":             params.QueryText,
+			"query_text":             traceQuery,
 			"kb_ids":                 searchKBIDs,
 			"knowledge_ids":          params.KnowledgeIDs,
 			"tag_ids":                params.TagIDs,
@@ -289,11 +299,47 @@ func (s *knowledgeBaseService) hybridSearchCandidates(ctx context.Context,
 		},
 	})
 	retrieveResults, err := s.retrieveFromStores(retrieveCtx, groups, retriever.EngineAwareNormalizer{})
-	retrieveSpan.Finish(langfuse.SummarizeRetrieveOutput(retrieveResults), nil, err)
+	if err == nil {
+		ids := make([]string, 0)
+		seen := make(map[string]bool)
+		for _, result := range retrieveResults {
+			if result == nil {
+				continue
+			}
+			for _, hit := range result.Results {
+				if hit != nil && hit.KnowledgeID != "" && !seen[hit.KnowledgeID] {
+					ids = append(ids, hit.KnowledgeID)
+					seen[hit.KnowledgeID] = true
+				}
+			}
+		}
+		rows := make(map[string]*types.Knowledge, len(ids))
+		if len(ids) > 0 {
+			var loaded []*types.Knowledge
+			loaded, err = s.kgRepo.GetKnowledgeBatchByIDOnly(ctx, ids)
+			for _, row := range loaded {
+				if row != nil {
+					rows[row.ID] = row
+				}
+			}
+		}
+		if err == nil {
+			for _, result := range retrieveResults {
+				if result != nil {
+					result.Results = managedSearchHits(ctx, result.Results, rows)
+				}
+			}
+		}
+	}
+	if api.ManagedJSONActive(ctx) {
+		retrieveSpan.Finish(map[string]interface{}{"redacted": true}, nil, err)
+	} else {
+		retrieveSpan.Finish(langfuse.SummarizeRetrieveOutput(retrieveResults), nil, err)
+	}
 	if err != nil {
 		logger.ErrorWithFields(ctx, err, map[string]interface{}{
 			"knowledge_base_ids": searchKBIDs,
-			"query_text":         params.QueryText,
+			"query_text":         traceQuery,
 		})
 		return nil, err
 	}
@@ -548,12 +594,19 @@ func (s *knowledgeBaseService) resolveQueryEmbedding(
 		logger.Errorf(ctx, "Failed to get embedding model, model ID: %s, error: %v", kb.EmbeddingModelID, err)
 		return nil, err
 	}
+	if api.ManagedJSONActive(ctx) && (embeddingModel == nil || embeddingModel.GetModelName() != managedcapability.EmbeddingModel || embeddingModel.GetDimensions() != managedcapability.EmbeddingDimensions) {
+		return nil, ErrManagedWorkerUnavailable
+	}
 	logger.Infof(ctx, "Embedding model retrieved: %v", embeddingModel)
 
 	logger.Info(ctx, "Starting to generate query embedding")
 	queryEmbedding, err := embeddingModel.Embed(types.WithEmbedQuery(ctx), params.QueryText)
 	if err != nil {
-		logger.Errorf(ctx, "Failed to embed query text, query text: %s, error: %v", params.QueryText, err)
+		if api.ManagedJSONActive(ctx) {
+			logger.Errorf(ctx, "Failed to embed managed query: %v", err)
+		} else {
+			logger.Errorf(ctx, "Failed to embed query text, query text: %s, error: %v", params.QueryText, err)
+		}
 		return nil, err
 	}
 	if err := validateQueryEmbeddingDimension(embeddingModel, len(queryEmbedding)); err != nil {
@@ -562,4 +615,21 @@ func (s *knowledgeBaseService) resolveQueryEmbedding(
 	}
 	logger.Infof(ctx, "Query embedding generated successfully, embedding vector length: %d", len(queryEmbedding))
 	return queryEmbedding, nil
+}
+
+// Only signed managed execution may return managed documents. Missing rows are
+// dropped instead of treating absent authority as an ordinary document.
+func managedSearchHits(ctx context.Context, hits []*types.IndexWithScore, rows map[string]*types.Knowledge) []*types.IndexWithScore {
+	out := make([]*types.IndexWithScore, 0, len(hits))
+	for _, hit := range hits {
+		if hit == nil {
+			continue
+		}
+		row := rows[hit.KnowledgeID]
+		if row == nil || (hit.KnowledgeBaseID != "" && hit.KnowledgeBaseID != row.KnowledgeBaseID) || (row.ManagedWorkID != "" && !api.ManagedJSONActive(ctx)) {
+			continue
+		}
+		out = append(out, hit)
+	}
+	return out
 }

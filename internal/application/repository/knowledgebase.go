@@ -169,7 +169,21 @@ func (r *knowledgeBaseRepository) ListUserKBPinIDs(
 
 // UpdateKnowledgeBase updates a knowledge base
 func (r *knowledgeBaseRepository) UpdateKnowledgeBase(ctx context.Context, kb *types.KnowledgeBase) error {
-	return r.db.WithContext(ctx).Save(kb).Error
+	if kb == nil || kb.ID == "" || kb.TenantID == 0 {
+		return ErrKnowledgeBaseNotFound
+	}
+	// Never use Save here: its zero-row fallback inserts/upserts and can
+	// resurrect a row whose soft-delete committed after the caller read it.
+	result := r.db.WithContext(ctx).Model(&types.KnowledgeBase{}).
+		Where("id = ? AND tenant_id = ?", kb.ID, kb.TenantID).
+		Select("*").Omit("id", "tenant_id", "deleted_at").Updates(kb)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return ErrKnowledgeBaseNotFound
+	}
+	return nil
 }
 
 // UpdateKnowledgeBaseGeneratedProfile writes the generated_profile column

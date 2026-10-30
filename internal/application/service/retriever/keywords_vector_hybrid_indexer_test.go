@@ -2,12 +2,15 @@ package retriever
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/models/embedding"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
+	"github.com/stretchr/testify/require"
 )
 
 type capturingEmbedder struct {
@@ -115,4 +118,21 @@ func assertImagePayloadRemoved(t *testing.T, content string, payload string) {
 	if !strings.Contains(content, "before") || !strings.Contains(content, "after") {
 		t.Fatalf("embedding input should preserve surrounding text, got %q", content)
 	}
+}
+
+type unknownManagedEmbedder struct {
+	embedding.Embedder
+	calls int
+}
+
+func (e *unknownManagedEmbedder) BatchEmbedWithPool(context.Context, embedding.Embedder, []string) ([][]float32, error) {
+	e.calls++
+	return nil, errors.New("unknown settlement")
+}
+func TestManagedBatchIndexDoesNotRetryUnknownOutcome(t *testing.T) {
+	ctx := api.WithManagedJSON(context.Background(), func(context.Context, string, string, []byte) ([]byte, error) { return nil, errors.New("unreachable") })
+	model := &unknownManagedEmbedder{}
+	_, err := batchEmbedWithBackoff(ctx, model, []string{"test"})
+	require.Error(t, err)
+	require.Equal(t, 1, model.calls)
 }
