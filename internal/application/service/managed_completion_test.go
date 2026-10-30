@@ -521,6 +521,154 @@ func TestManagedCompletionSearchSingleConnectionAndStaleBarrier(t *testing.T) {
 	}
 }
 
+func TestManagedSearchResponseEnvelopeConsumesProofAndAuthenticatesExactPayload(t *testing.T) {
+	goldenRaw, err := os.ReadFile("testdata/managed-search-response-golden-v1.json")
+	require.NoError(t, err)
+	var golden struct {
+		CallbackKey string `json:"callback_key_fixture_only"`
+		Response    struct {
+			Data struct {
+				Payload string `json:"payload"`
+				MAC     string `json:"mac"`
+			} `json:"data"`
+		} `json:"response"`
+		RawPayload string `json:"raw_payload_utf8"`
+	}
+	require.NoError(t, json.Unmarshal(goldenRaw, &golden))
+	fixtureKey := []byte(golden.CallbackKey)
+	goldenPayload, err := base64.StdEncoding.DecodeString(golden.Response.Data.Payload)
+	require.NoError(t, err)
+	require.Equal(t, golden.RawPayload, string(goldenPayload))
+	derive := hmac.New(sha256.New, fixtureKey)
+	_, _ = derive.Write([]byte("managed-search-response-v1"))
+	fixtureMAC := hmac.New(sha256.New, derive.Sum(nil))
+	_, err = fixtureMAC.Write(goldenPayload)
+	require.NoError(t, err)
+	require.Equal(t, hex.EncodeToString(fixtureMAC.Sum(nil)), golden.Response.Data.MAC)
+
+	f := newCompletionFixture(t)
+	f.ingest()
+	require.NoError(t, f.finalize())
+	now := f.now.Load()
+	use := f.use()
+	f.search = managedcapability.SearchBinding{IndexBinding: f.binding.IndexBinding, CompletionDigest: use.CompletionDigest, IndexWorkID: "work", TenantID: 1, ActorID: "actor", AccountID: "payer", TaskID: "search-task", WorkID: "search-work", GrantID: "search-grant", KnowledgeBaseID: "kb", KnowledgeID: "doc", QueryDigest: strings.Repeat("a", 64), EmbeddingModel: f.binding.EmbeddingModel, EmbeddingSpace: f.binding.EmbeddingSpace, RerankModel: "qwen3-rerank"}
+	capability := f.sign("weknora-search-v1", managedcapability.SearchClaims{Issuer: "issuer", Audience: "weknora", SearchBinding: f.search, IssuedAt: now, ExpiresAt: now + 30})
+	body, err := json.Marshal(struct {
+		Capability string `json:"capability"`
+	}{capability})
+	require.NoError(t, err)
+	path := "/api/v1/knowledge-bases/kb/managed-hybrid-search"
+	nonce := strings.Repeat("c", 64)
+	proof := f.sign("weknora-request-v1", managedcapability.RequestClaims{Issuer: "issuer", Audience: "weknora", Method: "POST", Path: path, BodySHA256: managedSHA(body), Nonce: nonce, WorkID: f.search.WorkID, ActorID: f.search.ActorID, AccountID: f.search.AccountID, IssuedAt: now, ExpiresAt: now + 30})
+	svc := &knowledgeBaseService{managedWorker: f.worker, kgRepo: completionKnowledgeRepo{db: f.db}}
+	ctx := context.WithValue(context.Background(), types.TenantIDContextKey, uint64(1))
+	wrongBody := append(append([]byte(nil), body...), ' ')
+	_, err = svc.ManagedHybridSearchWithEvidence(ctx, 1, "kb", "POST", path, wrongBody, capability, proof)
+	require.Error(t, err, "proof body digest mismatch must fail before paid retrieval")
+	require.EqualValues(t, 1, f.dispatches.Load(), "invalid proof cannot add any paid query calls")
+	response, err := svc.ManagedHybridSearchWithEvidence(ctx, 1, "kb", "POST", path, body, capability, proof)
+	require.NoError(t, err)
+	require.NotEmpty(t, response.Payload)
+	payloadRaw, err := base64.StdEncoding.DecodeString(response.Payload)
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(payloadRaw), managedSearchResponseMaxBytes)
+	require.Equal(t, f.host.SearchResponseMAC(payloadRaw), response.MAC)
+	var payload managedSearchResponsePayload
+	require.NoError(t, json.Unmarshal(payloadRaw, &payload))
+	require.Equal(t, "managed-search-response-v1", payload.Version)
+	require.Equal(t, f.search, payload.Scope)
+	require.Equal(t, nonce, payload.Nonce)
+	require.Equal(t, f.worker.workerBootID, payload.WorkerBootID)
+	require.LessOrEqual(t, payload.ExpiresAt, now+30)
+	resultRaw, err := base64.StdEncoding.DecodeString(payload.ResultBase64)
+	require.NoError(t, err)
+	require.Equal(t, managedSHA(resultRaw), payload.ContentSHA256)
+	require.EqualValues(t, 3, f.dispatches.Load(), "one ingest embedding, one query embedding and one rerank")
+	_, err = svc.ManagedHybridSearchWithEvidence(ctx, 1, "kb", "POST", path, body, capability, proof)
+	require.Error(t, err, "request nonce replay must be refused")
+	require.EqualValues(t, 3, f.dispatches.Load(), "a replay cannot repeat paid work")
+	f.denied.Store(true)
+	staleProof := f.sign("weknora-request-v1", managedcapability.RequestClaims{Issuer: "issuer", Audience: "weknora", Method: "POST", Path: path, BodySHA256: managedSHA(body), Nonce: strings.Repeat("d", 64), WorkID: f.search.WorkID, ActorID: f.search.ActorID, AccountID: f.search.AccountID, IssuedAt: now, ExpiresAt: now + 30})
+	_, err = svc.ManagedHybridSearchWithEvidence(ctx, 1, "kb", "POST", path, body, capability, staleProof)
+	require.Error(t, err, "stale host authority must fail closed")
+	require.EqualValues(t, 3, f.dispatches.Load(), "stale authority cannot reach paid retrieval")
+}
+
+func TestManagedSearchResponseRejectsLateReferenceMutationBeforeSigning(t *testing.T) {
+	f := newCompletionFixture(t)
+	f.ingest()
+	require.NoError(t, f.finalize())
+	use := f.use()
+	f.search = managedcapability.SearchBinding{IndexBinding: f.binding.IndexBinding, CompletionDigest: use.CompletionDigest, IndexWorkID: "work", TenantID: 1, ActorID: "actor", AccountID: "payer", TaskID: "search-task", WorkID: "search-work", GrantID: "search-grant", KnowledgeBaseID: "kb", KnowledgeID: "doc", QueryDigest: strings.Repeat("a", 64), EmbeddingModel: f.binding.EmbeddingModel, EmbeddingSpace: f.binding.EmbeddingSpace, RerankModel: "qwen3-rerank"}
+	var checks atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/knowledge-search/authorize" && checks.Add(1) == 10 {
+			require.NoError(t, f.db.Exec("UPDATE chunks SET content='changed after retrieval' WHERE id = ?", "chunk").Error)
+		}
+		f.serve(w, r)
+	}))
+	t.Cleanup(server.Close)
+	var err error
+	f.host, err = managedcapability.NewHostAuthority(server.URL+"/internal/knowledge-work/authorize", f.verifier, server.Client(), []byte("0123456789abcdef0123456789abcdef"))
+	require.NoError(t, err)
+	f.worker.host = f.host
+
+	now := f.now.Load()
+	capability := f.sign("weknora-search-v1", managedcapability.SearchClaims{Issuer: "issuer", Audience: "weknora", SearchBinding: f.search, IssuedAt: now, ExpiresAt: now + 30})
+	body, err := json.Marshal(struct {
+		Capability string `json:"capability"`
+	}{capability})
+	require.NoError(t, err)
+	path := "/api/v1/knowledge-bases/kb/managed-hybrid-search"
+	proof := f.sign("weknora-request-v1", managedcapability.RequestClaims{Issuer: "issuer", Audience: "weknora", Method: "POST", Path: path, BodySHA256: managedSHA(body), Nonce: strings.Repeat("e", 64), WorkID: f.search.WorkID, ActorID: f.search.ActorID, AccountID: f.search.AccountID, IssuedAt: now, ExpiresAt: now + 30})
+	svc := &knowledgeBaseService{managedWorker: f.worker, kgRepo: completionKnowledgeRepo{db: f.db}}
+	ctx := context.WithValue(context.Background(), types.TenantIDContextKey, uint64(1))
+	response, err := svc.ManagedHybridSearchWithEvidence(ctx, 1, "kb", "POST", path, body, capability, proof)
+	require.EqualValues(t, 10, checks.Load(), "mutation is injected in the wrapper's final asynchronous authority check")
+	require.Error(t, err, "changed references cannot receive a signed success")
+	require.Nil(t, response)
+	require.EqualValues(t, 3, f.dispatches.Load(), "only ingest embedding, query embedding, and rerank may dispatch")
+	_, err = svc.ManagedHybridSearchWithEvidence(ctx, 1, "kb", "POST", path, body, capability, proof)
+	require.Error(t, err, "failed response proof remains consumed")
+	require.EqualValues(t, 3, f.dispatches.Load(), "failure and replay cannot add paid dispatches")
+}
+
+func TestManagedSearchResponseRejectsExpiryAtFinalAuthorityCheck(t *testing.T) {
+	f := newCompletionFixture(t)
+	f.ingest()
+	require.NoError(t, f.finalize())
+	use := f.use()
+	f.search = managedcapability.SearchBinding{IndexBinding: f.binding.IndexBinding, CompletionDigest: use.CompletionDigest, IndexWorkID: "work", TenantID: 1, ActorID: "actor", AccountID: "payer", TaskID: "search-task", WorkID: "search-work", GrantID: "search-grant", KnowledgeBaseID: "kb", KnowledgeID: "doc", QueryDigest: strings.Repeat("a", 64), EmbeddingModel: f.binding.EmbeddingModel, EmbeddingSpace: f.binding.EmbeddingSpace, RerankModel: "qwen3-rerank"}
+	var checks atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/knowledge-search/authorize" && checks.Add(1) == 10 {
+			f.now.Add(31)
+		}
+		f.serve(w, r)
+	}))
+	t.Cleanup(server.Close)
+	var err error
+	f.host, err = managedcapability.NewHostAuthority(server.URL+"/internal/knowledge-work/authorize", f.verifier, server.Client(), []byte("0123456789abcdef0123456789abcdef"))
+	require.NoError(t, err)
+	f.worker.host = f.host
+
+	now := f.now.Load()
+	capability := f.sign("weknora-search-v1", managedcapability.SearchClaims{Issuer: "issuer", Audience: "weknora", SearchBinding: f.search, IssuedAt: now, ExpiresAt: now + 30})
+	body, err := json.Marshal(struct {
+		Capability string `json:"capability"`
+	}{capability})
+	require.NoError(t, err)
+	path := "/api/v1/knowledge-bases/kb/managed-hybrid-search"
+	proof := f.sign("weknora-request-v1", managedcapability.RequestClaims{Issuer: "issuer", Audience: "weknora", Method: "POST", Path: path, BodySHA256: managedSHA(body), Nonce: strings.Repeat("f", 64), WorkID: f.search.WorkID, ActorID: f.search.ActorID, AccountID: f.search.AccountID, IssuedAt: now, ExpiresAt: now + 30})
+	svc := &knowledgeBaseService{managedWorker: f.worker, kgRepo: completionKnowledgeRepo{db: f.db}}
+	ctx := context.WithValue(context.Background(), types.TenantIDContextKey, uint64(1))
+	response, err := svc.ManagedHybridSearchWithEvidence(ctx, 1, "kb", "POST", path, body, capability, proof)
+	require.EqualValues(t, 10, checks.Load())
+	require.Error(t, err, "expired signed windows cannot be used for response signing")
+	require.Nil(t, response)
+	require.EqualValues(t, 3, f.dispatches.Load(), "expiry detection does not repeat a query or add dispatches")
+}
+
 func TestManagedCompletionUseNonceMACAndStorageHandshake(t *testing.T) {
 	f := newCompletionFixture(t)
 	f.ingest()

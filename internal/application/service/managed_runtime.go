@@ -170,20 +170,25 @@ func newPilotManagedWorker(db *gorm.DB, verifier *managedcapability.Verifier, ho
 // Proofs are consumed atomically and retained as replay tombstones. Cleanup
 // must not be introduced without a trusted clock and rollback-safe retention.
 func (w *pilotManagedWorker) acceptProof(ctx context.Context, method, path string, body []byte, proof, work, actor, account string) error {
+	_, err := w.acceptProofClaims(ctx, method, path, body, proof, work, actor, account)
+	return err
+}
+
+func (w *pilotManagedWorker) acceptProofClaims(ctx context.Context, method, path string, body []byte, proof, work, actor, account string) (managedcapability.RequestClaims, error) {
 	if w == nil {
-		return ErrManagedWorkerUnavailable
+		return managedcapability.RequestClaims{}, ErrManagedWorkerUnavailable
 	}
 	claims, err := w.verifier.VerifyRequest(proof, method, path, body, work, actor, account)
 	if err != nil {
-		return ErrManagedWorkerUnavailable
+		return managedcapability.RequestClaims{}, ErrManagedWorkerUnavailable
 	}
 	sum := sha256.Sum256([]byte(claims.Nonce))
 	row := managedRequestNonce{Hash: hex.EncodeToString(sum[:]), ExpiresAt: claims.ExpiresAt}
 	result := w.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&row)
 	if result.Error != nil || result.RowsAffected != 1 {
-		return ErrManagedWorkerUnavailable
+		return managedcapability.RequestClaims{}, ErrManagedWorkerUnavailable
 	}
-	return nil
+	return claims, nil
 }
 func (w *pilotManagedWorker) Register(ctx context.Context, tenant uint64, kb, path, token string) (managedcapability.Binding, error) {
 	claims, err := w.verifier.DecodeVerified(token)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,114 @@ import (
 	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/types"
 )
+
+const managedSearchResponseMaxBytes = 1 << 20
+
+// ManagedSearchResponse is the authenticated HTTP delivery format consumed by
+// the normal SuperWagie host. Payload is base64 so its exact bytes survive JSON
+// transport; MAC authenticates those bytes before the host parses them.
+type ManagedSearchResponse struct {
+	Payload string `json:"payload"`
+	MAC     string `json:"mac"`
+}
+
+type managedSearchResponsePayload struct {
+	Version       string                          `json:"version"`
+	Scope         managedcapability.SearchBinding `json:"scope"`
+	Nonce         string                          `json:"nonce"`
+	WorkerBootID  string                          `json:"worker_boot_id"`
+	ResultBase64  string                          `json:"result_base64"`
+	ContentSHA256 string                          `json:"content_sha256"`
+	IssuedAt      int64                           `json:"issued_at"`
+	ExpiresAt     int64                           `json:"expires_at"`
+}
+
+// ManagedHybridSearchWithEvidence consumes the one-use request proof exactly
+// once, performs a managed search, and returns a response authenticated with
+// the existing callback key under the managed-search-response-v1 domain.
+func (s *knowledgeBaseService) ManagedHybridSearchWithEvidence(ctx context.Context, tenant uint64, kbID, method, path string, body []byte, capability, proof string) (*ManagedSearchResponse, error) {
+	w := s.managedWorker
+	if w == nil || w.workerBootID == "" {
+		return nil, ErrManagedWorkerUnavailable
+	}
+	claims, err := w.verifier.DecodeSearch(capability)
+	if err != nil || claims.TenantID != tenant || claims.KnowledgeBaseID != kbID || w.host.SearchCheck(ctx, claims.SearchBinding) != nil {
+		return nil, ErrManagedWorkerUnavailable
+	}
+	request, err := w.acceptProofClaims(ctx, method, path, body, proof, claims.WorkID, claims.ActorID, claims.AccountID)
+	if err != nil {
+		return nil, ErrManagedWorkerUnavailable
+	}
+	result, err := s.ManagedHybridSearch(ctx, kbID, capability)
+	if err != nil || result == nil {
+		return nil, ErrManagedWorkerUnavailable
+	}
+	// Revalidate live authority and both signed windows after retrieval. This is
+	// a metadata check only; it cannot dispatch or repeat the paid query.
+	if w.host.SearchCheck(ctx, claims.SearchBinding) != nil {
+		return nil, ErrManagedWorkerUnavailable
+	}
+	if err = s.revalidateManagedSearchResult(ctx, tenant, kbID, claims.SearchBinding, result); err != nil {
+		return nil, ErrManagedWorkerUnavailable
+	}
+	resultRaw, err := json.Marshal(result)
+	if err != nil || len(resultRaw) == 0 || len(resultRaw) > managedSearchResponseMaxBytes {
+		return nil, ErrManagedWorkerUnavailable
+	}
+	now := w.verifier.CurrentUnix()
+	expires := min(now+30, claims.ExpiresAt, request.ExpiresAt)
+	if now <= 0 || expires <= now || w.workerBootID == "" {
+		return nil, ErrManagedWorkerUnavailable
+	}
+	digest := sha256.Sum256(resultRaw)
+	payload := managedSearchResponsePayload{
+		Version: "managed-search-response-v1", Scope: claims.SearchBinding, Nonce: request.Nonce,
+		WorkerBootID: w.workerBootID, ResultBase64: base64.StdEncoding.EncodeToString(resultRaw),
+		ContentSHA256: hex.EncodeToString(digest[:]), IssuedAt: now, ExpiresAt: expires,
+	}
+	payloadRaw, err := json.Marshal(payload)
+	if err != nil || len(payloadRaw) > managedSearchResponseMaxBytes {
+		return nil, ErrManagedWorkerUnavailable
+	}
+	// Finish all serialization before the last signed-window checks so no
+	// callback or database work can occur between those checks and the MAC.
+	if _, err = w.verifier.VerifySearch(capability, claims.SearchBinding); err != nil {
+		return nil, ErrManagedWorkerUnavailable
+	}
+	if _, err = w.verifier.VerifyRequest(proof, method, path, body, claims.WorkID, claims.ActorID, claims.AccountID); err != nil {
+		return nil, ErrManagedWorkerUnavailable
+	}
+	signingNow := w.verifier.CurrentUnix()
+	if signingNow <= 0 || expires <= signingNow {
+		return nil, ErrManagedWorkerUnavailable
+	}
+	return &ManagedSearchResponse{Payload: base64.StdEncoding.EncodeToString(payloadRaw), MAC: w.host.SearchResponseMAC(payloadRaw)}, nil
+}
+
+// revalidateManagedSearchResult runs only local SQLite reads after the wrapper's
+// final asynchronous authority check. It binds the returned result back to the
+// exact persisted completion, index registration and current source rows.
+func (s *knowledgeBaseService) revalidateManagedSearchResult(ctx context.Context, tenant uint64, kbID string, b managedcapability.SearchBinding, result *types.RetrievalResult) error {
+	w := s.managedWorker
+	if w == nil || w.db == nil || result == nil || len(result.Results) != 1 || result.Results[0] == nil {
+		return ErrManagedWorkerUnavailable
+	}
+	return w.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		completion, refs, err := w.ReadCompletedIndexTx(ctx, tx, b.IndexWorkID, b.IndexRevision, b.CompletionDigest)
+		if err != nil || completion.WorkID != b.IndexWorkID || completion.KnowledgeID != b.KnowledgeID || completion.Revision != b.IndexRevision {
+			return ErrManagedWorkerUnavailable
+		}
+		indexed, err := w.lookup(ctx, tx, b.IndexWorkID)
+		if err != nil || indexed.IndexBinding != b.IndexBinding || indexed.TenantID != tenant || indexed.KnowledgeBaseID != kbID || indexed.KnowledgeID != b.KnowledgeID || indexed.WorkID != b.IndexWorkID || indexed.ActorID != b.ActorID || indexed.AccountID != b.AccountID {
+			return ErrManagedWorkerUnavailable
+		}
+		candidate := result.Results[0]
+		if refs.Knowledge.TenantID != tenant || refs.Knowledge.KnowledgeBaseID != kbID || refs.Knowledge.ID != b.KnowledgeID || refs.Knowledge.ManagedWorkID != b.IndexWorkID || refs.Knowledge.ParseStatus != types.ParseStatusCompleted || refs.Knowledge.EnableStatus != "enabled" || candidate.ID != refs.Chunk.ID || candidate.Content != refs.Chunk.Content || candidate.KnowledgeID != refs.Knowledge.ID || candidate.KnowledgeTitle != refs.Knowledge.Title || candidate.KnowledgeFilename != refs.Knowledge.FileName || candidate.KnowledgeSource != refs.Knowledge.Source || candidate.ChunkType != refs.Chunk.ChunkType {
+			return ErrManagedWorkerUnavailable
+		}
+		return nil
+	})
+}
 
 // ManagedHybridSearch accepts only a host-signed capability. The query and
 // selected document come from independently authenticated host work state.

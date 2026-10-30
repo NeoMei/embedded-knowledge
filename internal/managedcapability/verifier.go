@@ -83,6 +83,15 @@ func NewVerifier(issuer, audience string, keys map[string]ed25519.PublicKey, lif
 	return &Verifier{issuer: issuer, audience: audience, keys: copied, lifetime: lifetime, now: now}, nil
 }
 
+// CurrentUnix returns the verifier's trusted clock for short-lived response
+// envelopes that must share its validity window.
+func (v *Verifier) CurrentUnix() int64 {
+	if v == nil || v.now == nil {
+		return 0
+	}
+	return v.now().Unix()
+}
+
 func validBinding(b Binding) bool {
 	return validOptionalIndex(b.IndexBinding) && b.TenantID != 0 && identifier.MatchString(b.ActorID) && identifier.MatchString(b.AccountID) && identifier.MatchString(b.TaskID) && identifier.MatchString(b.WorkID) && identifier.MatchString(b.GrantID) && identifier.MatchString(b.KnowledgeBaseID) && identifier.MatchString(b.KnowledgeID) && b.Purpose == "document-ingest" && digest.MatchString(b.InputDigest) && b.EmbeddingModel == EmbeddingModel && b.EmbeddingSpace == EmbeddingSpace
 }

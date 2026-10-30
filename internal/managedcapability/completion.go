@@ -260,8 +260,17 @@ func (h *HostAuthority) StorageCheck(ctx context.Context, c StorageRequest) erro
 	return h.checkLocalRead(ctx, "/storage-authorize", "managed-storage-auth-v1", c)
 }
 func (h *HostAuthority) CompletionResponseMAC(raw []byte) string {
+	return h.responseMAC("managed-completion-response-v1", raw)
+}
+
+// SearchResponseMAC authenticates the exact serialized managed-search payload.
+func (h *HostAuthority) SearchResponseMAC(raw []byte) string {
+	return h.responseMAC("managed-search-response-v1", raw)
+}
+
+func (h *HostAuthority) responseMAC(domain string, raw []byte) string {
 	derive := hmac.New(sha256.New, h.callbackKey)
-	derive.Write([]byte("managed-completion-response-v1"))
+	derive.Write([]byte(domain))
 	m := hmac.New(sha256.New, derive.Sum(nil))
 	m.Write(raw)
 	return hex.EncodeToString(m.Sum(nil))

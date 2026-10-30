@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/Tencent/WeKnora/internal/application/service"
 	"github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/managedcapability"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -14,8 +15,7 @@ import (
 )
 
 type managedSearchService interface {
-	ManagedHybridSearch(context.Context, string, string) (*types.RetrievalResult, error)
-	AuthorizeManagedSearch(context.Context, uint64, string, string, string, []byte, string, string) error
+	ManagedHybridSearchWithEvidence(context.Context, uint64, string, string, string, []byte, string, string) (*service.ManagedSearchResponse, error)
 }
 
 func (h *KnowledgeBaseHandler) ManagedHybridSearch(c *gin.Context) {
@@ -49,14 +49,14 @@ func (h *KnowledgeBaseHandler) ManagedHybridSearch(c *gin.Context) {
 	}
 	ctx := types.WithExecutionTenant(c.Request.Context(), tenant)
 	proof := c.Request.Header.Values("X-WeKnora-Managed-Proof")
-	if len(proof) != 1 || svc.AuthorizeManagedSearch(ctx, tenant, kbID, c.Request.Method, c.Request.URL.Path, raw, body.Capability, proof[0]) != nil {
+	if len(proof) != 1 {
 		c.Error(errors.NewForbiddenError("Managed search unavailable"))
 		return
 	}
-	result, err := svc.ManagedHybridSearch(ctx, kbID, body.Capability)
+	result, err := svc.ManagedHybridSearchWithEvidence(ctx, tenant, kbID, c.Request.Method, c.Request.URL.Path, raw, body.Capability, proof[0])
 	if err != nil || result == nil {
 		c.Error(errors.NewForbiddenError("Managed search unavailable"))
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": result.Results, "meta": result.Meta})
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
 }
