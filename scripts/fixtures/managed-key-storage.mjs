@@ -194,15 +194,15 @@ try {
       $raw = [Security.AccessControl.RawSecurityDescriptor]::new($security.GetSecurityDescriptorBinaryForm(), 0)
       $target = $directory -ceq $value
       if ($null -eq $raw.Owner -or ($raw.Owner.Value -notin $trusted -and ($target -or $raw.Owner.Value -ne $installer)) -or
-          ($raw.ControlFlags -band [Security.AccessControl.ControlFlags]::DiscretionaryAclPresent) -eq 0 -or
+          ([int]$raw.ControlFlags -band [int][Security.AccessControl.ControlFlags]::DiscretionaryAclPresent) -eq 0 -or
           $null -eq $raw.DiscretionaryAcl -or $raw.DiscretionaryAcl.Count -eq 0) { throw 'compiler_temp' }
       foreach ($ace in $raw.DiscretionaryAcl) {
         if ($ace -isnot [Security.AccessControl.CommonAce] -or $ace.IsCallback) { throw 'compiler_temp' }
         if ($ace.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessDenied) { continue }
         if ($ace.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessAllowed) { throw 'compiler_temp' }
         if ($ace.SecurityIdentifier.Value -in $trusted -or (!$target -and $ace.SecurityIdentifier.Value -eq $installer)) { continue }
-        if ($target -or (($ace.AceFlags -band [Security.AccessControl.AceFlags]::InheritOnly) -eq 0 -and
-            ([long]$ace.AccessMask -band 0x5fedff50L) -ne 0)) { throw 'compiler_temp' }
+        if ($target -or (([int]$ace.AceFlags -band [int][Security.AccessControl.AceFlags]::InheritOnly) -eq 0 -and
+            ([long]$ace.AccessMask -band [long]1609432912) -ne 0)) { throw 'compiler_temp' }
       }
     }
     # An exclusive empty DeleteOnClose probe tests writability without changing

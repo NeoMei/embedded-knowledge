@@ -74,9 +74,11 @@ $env:WEKNORA_TEST_MANAGED_HOST_MODULE = $settings.helper
 & $settings.binary '-test.run' '^(TestManagedWindowsActualUserConfigHostLayout|TestManagedWindowsProductionHostPreparesEveryKeyKind|TestManagedWindowsProductionHostDirectoryOwnership|TestManagedWindowsProductionHostHoldsVerifiedEmptyFile|TestManagedWindowsHostLayoutInheritedPermissions|TestManagedWindowsKeyFileReadsPrivateOwnerKey)$' '-test.v' '-test.count=1'
 exit $LASTEXITCODE
 '@
+  $driverPath = Join-Path $root 'standard-driver.ps1'
+  [IO.File]::WriteAllText($driverPath, $driver, $utf8)
   $start = [Diagnostics.ProcessStartInfo]::new()
   $start.FileName = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
-  foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($driver)))) { $start.ArgumentList.Add($argument) }
+  foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-File', $driverPath)) { $start.ArgumentList.Add($argument) }
   $start.UserName = $account
   $start.Domain = $env:COMPUTERNAME
   $start.Password = $password
