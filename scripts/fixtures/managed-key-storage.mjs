@@ -166,6 +166,7 @@ try {
   $sourceLine = ReadBoundedLine 40000
   $source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($sourceLine))
   $metadataLine = ReadBoundedLine 32768
+  Import-Module -Name ([IO.Path]::Combine($PSHOME, 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop
   $inputValue = ConvertFrom-Json -InputObject $metadataLine
   if (@($inputValue.PSObject.Properties.Name).Count -ne 2 -or
       $inputValue.operation -notin @('directory', 'create-file', 'verify-file')) { throw 'invalid' }

@@ -19,7 +19,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Go unavailable' }
 $results.go_version = $goVersion
 $hostSource = Join-Path $source 'scripts/fixtures/managed-key-storage.mjs'
 $hostSHA = (Get-FileHash -LiteralPath $hostSource -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($hostSHA -ne '5f33fed65e330ef66b76de084ca698043ac69ea22c3e7634c28303590393632f') { throw 'Reviewed production host helper SHA differs' }
+if ($hostSHA -ne 'b6d333ce72308ac612198914356990856a93877adf91684f347377a38f536668') { throw 'Reviewed production host helper SHA differs' }
 $results.production_host_helper_sha256 = $hostSHA
 $env:WEKNORA_TEST_MANAGED_HOST_MODULE = $hostSource
 $results.node_version = (& node --version | Out-String).Trim()
