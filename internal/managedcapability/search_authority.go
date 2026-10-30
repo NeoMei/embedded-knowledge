@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 )
+
+var ErrSearchNotSubmitted = errors.New("managed search not submitted")
 
 func (h *HostAuthority) searchPost(ctx context.Context, route string, request map[string]string) (string, []byte, error) {
 	if h == nil || ctx == nil {
@@ -82,14 +86,49 @@ func (h *HostAuthority) SearchSnapshot(ctx context.Context, b SearchBinding) ([]
 	return body, nil
 }
 func (h *HostAuthority) SearchResult(ctx context.Context, b SearchBinding, callID, operation string) ([]byte, error) {
+	return h.searchResult(ctx, b, callID, operation, nil)
+}
+
+// SearchResultForInput also recognizes an authenticated absence for these exact
+// original bytes. The legacy result-only lookup never authorizes submission.
+func (h *HostAuthority) SearchResultForInput(ctx context.Context, b SearchBinding, callID, operation string, input []byte) ([]byte, error) {
+	if len(input) == 0 || len(input) > 2<<20 {
+		return nil, ErrInvalid
+	}
+	return h.searchResult(ctx, b, callID, operation, input)
+}
+
+func (h *HostAuthority) searchResult(ctx context.Context, b SearchBinding, callID, operation string, input []byte) ([]byte, error) {
 	model, wire := b.EmbeddingModel, "embeddings.create"
 	if operation == "rerank" {
 		model, wire = b.RerankModel, "rerank.create"
 	} else if operation != "embedding" {
 		return nil, ErrInvalid
 	}
-	nonce, raw, err := h.searchPost(ctx, "result", map[string]string{"work_id": b.WorkID, "call_id": callID, "operation": operation})
+	request := map[string]string{"work_id": b.WorkID, "call_id": callID, "operation": operation}
+	if len(input) != 0 {
+		sum := sha256.Sum256(input)
+		request["input_sha256"] = hex.EncodeToString(sum[:])
+	}
+	nonce, raw, err := h.searchPost(ctx, "result", request)
 	if err != nil {
+		return nil, ErrInvalid
+	}
+	var envelope map[string]json.RawMessage
+	if StrictJSON(raw, &envelope) != nil {
+		return nil, ErrInvalid
+	}
+	if token, ok := envelope["not_submitted_assertion"]; ok {
+		var assertion string
+		if len(envelope) != 1 || len(input) == 0 || json.Unmarshal(token, &assertion) != nil {
+			return nil, ErrInvalid
+		}
+		if _, err = h.verifier.VerifySearchNotSubmitted(assertion, b, nonce, callID, operation, input); err != nil {
+			return nil, ErrInvalid
+		}
+		return nil, ErrSearchNotSubmitted
+	}
+	if len(envelope) != 2 || envelope["assertion"] == nil || envelope["content"] == nil {
 		return nil, ErrInvalid
 	}
 	var result struct {
@@ -115,5 +154,5 @@ func (h *HostAuthority) SearchDispatch(ctx context.Context, b SearchBinding, cal
 	// Regardless of a lost acknowledgement, only a signed result lookup is
 	// performed afterwards; this method never makes a second dispatch.
 	_, _, _ = h.searchPost(ctx, "dispatch", map[string]string{"work_id": b.WorkID, "call_id": callID, "operation": operation, "content": base64.StdEncoding.EncodeToString(input)})
-	return h.SearchResult(ctx, b, callID, operation)
+	return h.SearchResultForInput(ctx, b, callID, operation, input)
 }

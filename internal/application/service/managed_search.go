@@ -219,12 +219,31 @@ func (s *knowledgeBaseService) ManagedHybridSearch(ctx context.Context, kbID, ca
 			return w.host.SearchDispatch(c, b, callID, operation, body)
 		})
 		if errors.Is(err, managedjournal.ErrUnresolved) {
-			out, err = w.journal.Recover(callCtx, scope, body, func(c context.Context, callID string) ([]byte, error) {
+			var absentCall string
+			readResult := func(c context.Context, callID string) ([]byte, error) {
 				if w.host.SearchCheck(c, b) != nil {
 					return nil, ErrManagedWorkerUnavailable
 				}
-				return w.host.SearchResult(c, b, callID, operation)
-			})
+				result, readErr := w.host.SearchResultForInput(c, b, callID, operation, body)
+				if errors.Is(readErr, managedcapability.ErrSearchNotSubmitted) {
+					absentCall = callID
+				}
+				return result, readErr
+			}
+			out, err = w.journal.Recover(callCtx, scope, body, readResult)
+			if errors.Is(err, managedjournal.ErrUnresolved) && absentCall != "" {
+				// Recover itself stays read-only. Only a fresh, signed absence for
+				// these exact bytes permits the original call to reach the host's
+				// exclusive dispatch claim; ambiguous failures never enter here.
+				info, inspectErr := w.journal.Inspect(callCtx, scope, body)
+				if inspectErr != nil || info.Status != "DISPATCHED" || info.CallID != absentCall || w.host.SearchCheck(callCtx, b) != nil {
+					return nil, ErrManagedWorkerUnavailable
+				}
+				if _, dispatchErr := w.host.SearchDispatch(callCtx, b, info.CallID, operation, body); dispatchErr != nil {
+					return nil, dispatchErr
+				}
+				out, err = w.journal.Recover(callCtx, scope, body, readResult)
+			}
 		}
 		if err != nil {
 			return nil, err
@@ -233,7 +252,7 @@ func (s *knowledgeBaseService) ManagedHybridSearch(ctx context.Context, kbID, ca
 		if err != nil || info.Status != "COMPLETED" {
 			return nil, ErrManagedWorkerUnavailable
 		}
-		confirmed, err := w.host.SearchResult(callCtx, b, info.CallID, operation)
+		confirmed, err := w.host.SearchResultForInput(callCtx, b, info.CallID, operation, body)
 		if err != nil || !hmac.Equal(out, confirmed) || w.host.SearchCheck(callCtx, b) != nil {
 			return nil, ErrManagedWorkerUnavailable
 		}

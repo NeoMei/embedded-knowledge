@@ -248,5 +248,10 @@ func (h *HostAuthority) do(req *http.Request, body []byte) (*http.Response, erro
 	_, _ = fmt.Fprintf(mac, "weknora-callback-v2\n%s\n%s\n%x\n%s\n%s", req.Method, req.URL.Path, sum, payload.Nonce, timestamp)
 	req.Header.Set("X-WeKnora-Worker-Signature", hex.EncodeToString(mac.Sum(nil)))
 	req.Header.Set("X-WeKnora-Worker-Time", timestamp)
+	if req.URL.Path == "/internal/knowledge-work/dispatch" || req.URL.Path == "/internal/knowledge-search/dispatch" {
+		client := *h.client
+		client.Timeout = 120 * time.Second
+		return client.Do(req)
+	}
 	return h.client.Do(req)
 }

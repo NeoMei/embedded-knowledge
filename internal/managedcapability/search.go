@@ -63,6 +63,41 @@ type SearchResultClaims struct {
 	ContentSHA256 string `json:"content_sha256"`
 }
 
+type SearchNotSubmittedClaims struct {
+	Issuer   string `json:"issuer"`
+	Audience string `json:"audience"`
+	SearchBinding
+	Nonce         string `json:"nonce"`
+	IssuedAt      int64  `json:"issued_at"`
+	ExpiresAt     int64  `json:"expires_at"`
+	CallID        string `json:"call_id"`
+	Model         string `json:"model"`
+	Operation     string `json:"operation"`
+	WireOperation string `json:"wire_operation"`
+	Status        string `json:"status"`
+	InputSHA256   string `json:"input_sha256"`
+}
+
+// An absence assertion authorizes only the original immutable input and call.
+// HTTP failures and settled-result assertions cannot stand in for this domain.
+func (v *Verifier) VerifySearchNotSubmitted(token string, b SearchBinding, nonce, callID, operation string, input []byte) (SearchNotSubmittedClaims, error) {
+	var c SearchNotSubmittedClaims
+	model, wire := b.EmbeddingModel, "embeddings.create"
+	if operation == "rerank" {
+		model, wire = b.RerankModel, "rerank.create"
+	} else if operation != "embedding" {
+		return c, ErrInvalid
+	}
+	if !validSearch(b) || !ValidIndexBinding(b.IndexBinding) || !digest.MatchString(b.CompletionDigest) || !identifier.MatchString(b.IndexWorkID) || !digest.MatchString(nonce) || !identifier.MatchString(callID) || len(input) == 0 || len(input) > 2<<20 || v.verifyEnvelope(token, "weknora-search-not-submitted-v1", &c) != nil || c.Issuer != v.issuer || c.Audience != v.audience || c.SearchBinding != b || c.Nonce != nonce || c.CallID != callID || c.Model != model || c.Operation != operation || c.WireOperation != wire || c.Status != "NOT_SUBMITTED" || !v.validWindow(c.IssuedAt, c.ExpiresAt, 30) {
+		return SearchNotSubmittedClaims{}, ErrInvalid
+	}
+	sum := sha256.Sum256(input)
+	if !hmac.Equal([]byte(c.InputSHA256), []byte(hex.EncodeToString(sum[:]))) {
+		return SearchNotSubmittedClaims{}, ErrInvalid
+	}
+	return c, nil
+}
+
 func validSearch(b SearchBinding) bool {
 	return validOptionalIndex(b.IndexBinding) && (b.IndexBinding == (IndexBinding{}) || (digest.MatchString(b.CompletionDigest) && identifier.MatchString(b.IndexWorkID))) && b.TenantID != 0 && identifier.MatchString(b.ActorID) && identifier.MatchString(b.AccountID) && identifier.MatchString(b.TaskID) && identifier.MatchString(b.WorkID) && identifier.MatchString(b.GrantID) && identifier.MatchString(b.KnowledgeBaseID) && identifier.MatchString(b.KnowledgeID) && digest.MatchString(b.QueryDigest) && b.EmbeddingModel == EmbeddingModel && b.EmbeddingSpace == EmbeddingSpace && b.RerankModel == "qwen3-rerank"
 }
