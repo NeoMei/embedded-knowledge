@@ -11,7 +11,9 @@ if (process.platform !== 'win32') throw new Error('native Windows is required');
 const started = performance.now();
 const events = [];
 const record = (stage) => events.push({ stage, elapsed_ms: Math.round(performance.now() - started) });
-const allowed = new Set(['boot', 'stdin_open', 'source_line', 'source_read', 'metadata_line', 'module_start', 'module_ready', 'metadata_read', 'path_valid', 'compile_start', 'compile_done', 'run_done', 'caught', 'IOException', 'UnauthorizedAccessException', 'Win32Exception', 'TypeLoadException', 'ArgumentException', 'NullReferenceException', 'InvalidOperationException', 'RuntimeException', 'MethodInvocationException']);
+const allowed = new Set(['boot', 'stdin_open', 'compiler_temp_start', 'compiler_temp_ready', 'source_line', 'source_read', 'metadata_line', 'module_start', 'module_ready', 'metadata_read', 'path_valid', 'compile_start', 'compile_done', 'run_done', 'caught', 'IOException', 'UnauthorizedAccessException', 'Win32Exception', 'TypeLoadException', 'ArgumentException', 'SecurityException', 'FileNotFoundException', 'TypeInitializationException', 'NullReferenceException', 'InvalidOperationException', 'RuntimeException', 'MethodInvocationException']);
+const fixedReasons = ['invalid', 'compiler_temp', 'kind', 'security', 'owner or acl', 'acl kind', 'acl grant', 'private grant', 'ancestor grant', 'root', 'directory', 'key length', 'changed file', 'changed parent', 'create file', 'existing file'];
+for (const reason of fixedReasons) allowed.add('reason_' + reason.replaceAll(' ', '_'));
 const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'managed-normal-diagnostic-'));
 let success = false;
 const storage = createManagedKeyStorage({
@@ -21,6 +23,7 @@ const storage = createManagedKeyStorage({
     const replacements = [
       ["try {\n  $stdin", `try {\n  ${marker('boot')}\n  $stdin`],
       ["  function ReadBoundedLine", `  ${marker('stdin_open')}\n  function ReadBoundedLine`],
+      ["  AssertCompilerTemporary $env:TEMP", `  ${marker('compiler_temp_start')}\n  AssertCompilerTemporary $env:TEMP\n  ${marker('compiler_temp_ready')}`],
       ["  $source =", `  ${marker('source_line')}\n  $source =`],
       ["  $metadataLine =", `  ${marker('source_read')}\n  $metadataLine =`],
       ["  Import-Module -Name", `  ${marker('metadata_line')}\n  ${marker('module_start')}\n  Import-Module -Name`],
@@ -28,7 +31,7 @@ const storage = createManagedKeyStorage({
       ["  if (@($inputValue", `  ${marker('metadata_read')}\n  if (@($inputValue`],
       ["  Add-Type -TypeDefinition", `  ${marker('path_valid')}\n  ${marker('compile_start')}\n  Add-Type -TypeDefinition`],
       ["  [ManagedPrivateStorage]::Run", `  ${marker('compile_done')}\n  [ManagedPrivateStorage]::Run`],
-      ["} catch {\n", `  ${marker('run_done')}\n} catch {\n  ${marker('caught')}\n  $failure = $_.Exception\n  while ($null -ne $failure) { [Console]::Error.WriteLine('UH_PHASE_' + $failure.GetType().Name); $failure = $failure.InnerException }\n`],
+      ["} catch {\n", `  ${marker('run_done')}\n} catch {\n  ${marker('caught')}\n  $failure = $_.Exception\n  while ($null -ne $failure) { [Console]::Error.WriteLine('UH_PHASE_' + $failure.GetType().Name); if ($failure.Message -in @('invalid', 'compiler_temp', 'kind', 'security', 'owner or acl', 'acl kind', 'acl grant', 'private grant', 'ancestor grant', 'root', 'directory', 'key length', 'changed file', 'changed parent', 'create file', 'existing file')) { [Console]::Error.WriteLine('UH_PHASE_reason_' + $failure.Message.Replace(' ', '_')) }; $failure = $failure.InnerException }\n`],
     ];
     for (const [needle, replacement] of replacements) {
       if (script.split(needle).length !== 2) throw new Error('diagnostic bootstrap identity differs');

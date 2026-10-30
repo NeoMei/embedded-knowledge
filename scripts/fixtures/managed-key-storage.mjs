@@ -163,6 +163,57 @@ try {
     }
     return [Text.UTF8Encoding]::new($false, $true).GetString($bytes.ToArray())
   }
+  # CodeDom writes compiler artifacts even for in-memory Add-Type. Use only
+  # an existing private, writable user temp directory, never Windows fallback.
+  function AssertCompilerTemporary([string]$value) {
+    if (!$value -or $value -notmatch '^[A-Za-z]:\\' -or $value.Contains('/') -or
+        $value.Substring(2).Contains(':')) { throw 'compiler_temp' }
+    foreach ($part in $value.Substring(3).Split('\')) {
+      if (!$part -or $part.TrimEnd(' ', '.') -cne $part -or $part.IndexOfAny([char[]]'*?"<>|') -ge 0 -or
+          $part -match '^(?i:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)') { throw 'compiler_temp' }
+    }
+    # Framework GetFullPath expands normal Windows 8.3 profile aliases. Raw
+    # lexical aliases were refused above; validate the resulting actual tree.
+    $value = [IO.Path]::GetFullPath($value)
+    if (([IO.DriveInfo]::new($value.Substring(0, 3))).DriveType -ne [IO.DriveType]::Fixed) { throw 'compiler_temp' }
+    $user = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $trusted = @($user, 'S-1-5-18', 'S-1-5-32-544')
+    $installer = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+    $components = [Collections.Generic.Stack[string]]::new()
+    $cursor = $value
+    while ($cursor.Length -ge 3) {
+      $components.Push($cursor)
+      if ($cursor.Length -eq 3) { break }
+      $cursor = [IO.Path]::GetDirectoryName($cursor)
+    }
+    foreach ($directory in $components) {
+      $attributes = [IO.File]::GetAttributes($directory)
+      if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+          ($attributes -band [IO.FileAttributes]::Directory) -eq 0) { throw 'compiler_temp' }
+      $security = [IO.Directory]::GetAccessControl($directory)
+      $raw = [Security.AccessControl.RawSecurityDescriptor]::new($security.GetSecurityDescriptorBinaryForm(), 0)
+      $target = $directory -ceq $value
+      if ($null -eq $raw.Owner -or ($raw.Owner.Value -notin $trusted -and ($target -or $raw.Owner.Value -ne $installer)) -or
+          ($raw.ControlFlags -band [Security.AccessControl.ControlFlags]::DiscretionaryAclPresent) -eq 0 -or
+          $null -eq $raw.DiscretionaryAcl -or $raw.DiscretionaryAcl.Count -eq 0) { throw 'compiler_temp' }
+      foreach ($ace in $raw.DiscretionaryAcl) {
+        if ($ace -isnot [Security.AccessControl.CommonAce] -or $ace.IsCallback) { throw 'compiler_temp' }
+        if ($ace.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessDenied) { continue }
+        if ($ace.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessAllowed) { throw 'compiler_temp' }
+        if ($ace.SecurityIdentifier.Value -in $trusted -or (!$target -and $ace.SecurityIdentifier.Value -eq $installer)) { continue }
+        if ($target -or (($ace.AceFlags -band [Security.AccessControl.AceFlags]::InheritOnly) -eq 0 -and
+            ([long]$ace.AccessMask -band 0x5fedff50L) -ne 0)) { throw 'compiler_temp' }
+      }
+    }
+    # An exclusive empty DeleteOnClose probe tests writability without changing
+    # any existing object or retaining compiler-test state.
+    $probe = [IO.FileStream]::new([IO.Path]::Combine($value, 'uh-compiler-' + [Guid]::NewGuid().ToString('N')),
+      [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None, 1, [IO.FileOptions]::DeleteOnClose)
+    $probe.Dispose()
+    $env:TEMP = $value
+    $env:TMP = $value
+  }
+  AssertCompilerTemporary $env:TEMP
   $sourceLine = ReadBoundedLine 40000
   $source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($sourceLine))
   $metadataLine = ReadBoundedLine 32768
@@ -172,11 +223,12 @@ try {
       $inputValue.operation -notin @('directory', 'create-file', 'verify-file')) { throw 'invalid' }
   $target = [string]$inputValue.path
   if ($target.Length -gt 8000 -or $target -notmatch '^[A-Za-z]:\\' -or $target.Contains('/') -or
-      [IO.Path]::GetFullPath($target) -cne $target -or $target.Substring(2).Contains(':')) { throw 'invalid' }
+      $target.Substring(2).Contains(':')) { throw 'invalid' }
   foreach ($part in $target.Substring(3).Split('\')) {
     if (!$part -or $part.TrimEnd(' ', '.') -cne $part -or $part.IndexOfAny([char[]]'*?"<>|') -ge 0 -or
         $part -match '^(?i:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)') { throw 'invalid' }
   }
+  $target = [IO.Path]::GetFullPath($target)
   if (([IO.DriveInfo]::new($target.Substring(0, 3))).DriveType -ne [IO.DriveType]::Fixed) { throw 'invalid' }
   Add-Type -TypeDefinition $source -ErrorAction Stop | Out-Null
   [ManagedPrivateStorage]::Run([string]$inputValue.operation, $target, $stdin)
@@ -193,11 +245,13 @@ export function createManagedKeyStorage({ platform = process.platform, environme
     if (!path.win32.isAbsolute(filename) || path.win32.normalize(filename) !== filename || !/^[A-Za-z]:\\/.test(filename)) throw unavailable();
     const systemRoot = environment.SystemRoot || 'C:\\Windows';
     if (!path.win32.isAbsolute(systemRoot) || !/^[A-Za-z]:\\/.test(systemRoot)) throw unavailable();
+    const temporary = environment.TMP || environment.TEMP;
+    if (!temporary || !path.win32.isAbsolute(temporary) || path.win32.normalize(temporary) !== temporary || !/^[A-Za-z]:\\/.test(temporary)) throw unavailable();
     const executable = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     return new Promise((resolve, reject) => {
       const child = spawnProcess(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', Buffer.from(windowsPreparation, 'utf16le').toString('base64')], {
         windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'ignore'],
-        env: { SystemRoot: systemRoot, WINDIR: systemRoot },
+        env: { SystemRoot: systemRoot, WINDIR: systemRoot, TMP: temporary, TEMP: temporary },
       });
       let output = ''; let ready = false; let failed = false; let closed = false; let writing = false; let acknowledged = false;
       let completeWrite; let rejectWrite; let writeResult;

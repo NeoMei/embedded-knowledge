@@ -6,6 +6,7 @@ on:
     paths:
       - internal/application/service/managed_key_file_*.go
       - scripts/test-managed-key-windows.ps1
+      - scripts/test-managed-key-standard-user-windows.ps1
       - scripts/diagnose-managed-key-windows.mjs
       - scripts/fixtures/managed-key-storage.mjs
       - .github/workflows/managed-windows-key.yml
@@ -39,6 +40,9 @@ jobs:
         id: native
         shell: pwsh
         run: ./scripts/test-managed-key-windows.ps1
+      - name: Normal host creation and strict read as a standard user
+        shell: pwsh
+        run: ./scripts/test-managed-key-standard-user-windows.ps1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
