@@ -22,6 +22,9 @@ import (
 	"time"
 
 	sqliteRepo "github.com/Tencent/WeKnora/internal/application/repository/retriever/sqlite"
+	"github.com/Tencent/WeKnora/internal/application/service/retriever"
+	"github.com/Tencent/WeKnora/internal/infrastructure/chunker"
+	"github.com/Tencent/WeKnora/internal/infrastructure/docparser"
 	"github.com/Tencent/WeKnora/internal/managedcapability"
 	"github.com/Tencent/WeKnora/internal/managedjournal"
 	"github.com/Tencent/WeKnora/internal/models/api"
@@ -159,6 +162,13 @@ func (f *completionFixture) serve(w http.ResponseWriter, r *http.Request) {
 	case "/internal/knowledge-work/snapshot":
 		send("weknora-snapshot-v1", managedcapability.SnapshotClaims{Issuer: "issuer", Audience: "weknora", Binding: f.binding, Nonce: req.Nonce, IssuedAt: now, ExpiresAt: now + 30, ContentSHA256: managedSHA(f.document)}, f.document)
 	case "/internal/knowledge-work/dispatch":
+		body, err := base64.StdEncoding.DecodeString(req.Content)
+		require.NoError(f.t, err)
+		var request struct {
+			Input []string `json:"input"`
+		}
+		require.NoError(f.t, json.Unmarshal(body, &request))
+		require.Equal(f.t, []string{"fixture.txt\n" + strings.TrimSpace(string(f.document))}, request.Input)
 		f.dispatches.Add(1)
 		w.WriteHeader(200)
 	case "/internal/knowledge-work/result":
@@ -198,6 +208,17 @@ func (f *completionFixture) serve(w http.ResponseWriter, r *http.Request) {
 		q := []byte("query")
 		send("weknora-search-snapshot-v1", managedcapability.SearchSnapshotClaims{Issuer: "issuer", Audience: "weknora", SearchBinding: f.search, Nonce: req.Nonce, IssuedAt: now, ExpiresAt: now + 30, ContentSHA256: managedSHA(q)}, q)
 	case "/internal/knowledge-search/dispatch":
+		if req.Operation == "rerank" {
+			body, err := base64.StdEncoding.DecodeString(req.Content)
+			require.NoError(f.t, err)
+			var request struct {
+				Input struct {
+					Documents []string `json:"documents"`
+				} `json:"input"`
+			}
+			require.NoError(f.t, json.Unmarshal(body, &request))
+			require.Equal(f.t, []string{string(f.document)}, request.Input.Documents, "rerank consumes the original chunk, not embedding text")
+		}
 		f.dispatches.Add(1)
 		if req.Operation == "rerank" && f.duringRerank != nil {
 			f.duringRerank()
@@ -228,12 +249,16 @@ func (f *completionFixture) ingest() {
 	require.NoError(t, f.db.Exec("INSERT INTO knowledges(id,tenant_id,knowledge_base_id,managed_work_id,parse_status,enable_status,pending_subtasks_count,title,file_name,source) VALUES('doc',1,'kb','work','processing','disabled',0,'fixture.txt','fixture.txt','file')").Error)
 	admission, err := f.worker.Prepare(ctx, types.DocumentProcessPayload{TenantID: 1, KnowledgeBaseID: "kb", KnowledgeID: "doc", ManagedWorkID: "work", FileName: "fixture.txt"})
 	require.NoError(t, err)
-	vector, err := (pilotEmbedder{client: newCompletionEmbedClient()}).BatchEmbedWithPool(admission.Context, nil, []string{"fixture.txt\n" + string(f.document)})
+	parsed, err := (&docparser.SimpleFormatReader{}).Read(admission.Context, &types.ReadRequest{FileName: "fixture.txt", FileType: "txt", FileContent: admission.Snapshot})
 	require.NoError(t, err)
-	require.NoError(t, f.db.Exec("INSERT INTO chunks(id,tenant_id,knowledge_id,knowledge_base_id,content,content_revision,chunk_type,chunk_index,is_enabled) VALUES('chunk',1,'doc','kb',?,0,'text',0,1)", string(f.document)).Error)
+	chunks := chunker.Split(chunker.NormalizeLineEndings(parsed.MarkdownContent), chunker.DefaultConfig())
+	require.Len(t, chunks, 1)
+	chunk := types.Chunk{Content: chunks[0].Content, ContextHeader: chunks[0].ContextHeader}
+	content := buildKnowledgeIndexContent(&types.Knowledge{Title: "fixture.txt"}, chunk.EmbeddingContent())
+	require.NoError(t, f.db.Exec("INSERT INTO chunks(id,tenant_id,knowledge_id,knowledge_base_id,content,content_revision,chunk_type,chunk_index,is_enabled) VALUES('chunk',1,'doc','kb',?,0,'text',0,1)", chunk.Content).Error)
 	repo := sqliteRepo.NewSQLiteRetrieveEngineRepository(f.db)
-	enabled := true
-	require.NoError(t, repo.BatchSave(ctx, []*types.IndexInfo{{SourceID: "chunk", SourceType: types.ChunkSourceType, ChunkID: "chunk", KnowledgeID: "doc", KnowledgeBaseID: "kb", Content: "fixture.txt\n" + string(f.document), IsEnabled: enabled}}, map[string]any{"embedding": map[string][]float32{"chunk": vector[0]}}))
+	indexer := retriever.NewKVHybridRetrieveEngine(repo, types.SQLiteRetrieverEngineType)
+	require.NoError(t, indexer.BatchIndex(admission.Context, pilotEmbedder{client: newCompletionEmbedClient()}, []*types.IndexInfo{{SourceID: "chunk", SourceType: types.ChunkSourceType, ChunkID: "chunk", KnowledgeID: "doc", KnowledgeBaseID: "kb", Content: content, IsEnabled: true}}, []types.RetrieverType{types.VectorRetrieverType}))
 	require.NoError(t, f.worker.installCompletionGuards())
 }
 func (f *completionFixture) finalize() error {

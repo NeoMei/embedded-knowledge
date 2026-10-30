@@ -1,0 +1,1 @@
+UniHub acceptance fixture. The support desk is called Harbor. The sample refund window is seven days. This synthetic note contains no personal data. Use only this note to answer the acceptance question: what is the sample refund window?  Synthetic test only.  Synthetic test only.  Synthetic test on

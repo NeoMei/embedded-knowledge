@@ -65,7 +65,7 @@ func (p *pilotIndexRepo) BatchSave(context.Context, []*types.IndexInfo, map[stri
 func TestPilotRegistrationParserAndIndexRequireSignedSettledResult(t *testing.T) {
 	for _, settled := range []bool{true, false} {
 		t.Run(fmt.Sprintf("settled_%t", settled), func(t *testing.T) {
-			document := []byte(strings.Repeat("a", 300))
+			document := approvedTXT(t)
 			file := filepath.Join(t.TempDir(), "fixture.txt")
 			require.NoError(t, os.WriteFile(file, document, 0600))
 			pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -111,7 +111,7 @@ func TestPilotRegistrationParserAndIndexRequireSignedSettledResult(t *testing.T)
 					}
 					require.NoError(t, json.Unmarshal(body, &model))
 					require.Equal(t, managedcapability.EmbeddingModel, model.Model)
-					require.Equal(t, []string{"fixture.txt\n" + string(document)}, model.Input)
+					require.Equal(t, []string{"fixture.txt\n" + strings.TrimSpace(string(document))}, model.Input)
 					_, _ = w.Write([]byte(`{"status":"submitted"}`))
 				case "/internal/knowledge-work/result":
 					if !allowResult {
@@ -154,7 +154,8 @@ func TestPilotRegistrationParserAndIndexRequireSignedSettledResult(t *testing.T)
 			require.NoError(t, err)
 			chunks := chunker.Split(parsed.MarkdownContent, chunker.DefaultConfig())
 			require.Len(t, chunks, 1)
-			content := buildKnowledgeIndexContent(knowledge, chunks[0].Content)
+			chunk := types.Chunk{Content: chunks[0].Content, ContextHeader: chunks[0].ContextHeader}
+			content := buildKnowledgeIndexContent(knowledge, chunk.EmbeddingContent())
 			client := openaiembeddings.New(openaiembeddings.Config{Endpoint: api.Endpoint{Model: managedcapability.EmbeddingModel, BaseURL: "https://invalid.test/v1"}, Retry: api.RetryPolicy{MaxRetries: 3}})
 			embedder := pilotEmbedder{client: client}
 			vectors := &pilotIndexRepo{}

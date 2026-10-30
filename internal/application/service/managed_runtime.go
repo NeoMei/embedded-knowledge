@@ -200,7 +200,7 @@ func (w *pilotManagedWorker) Register(ctx context.Context, tenant uint64, kb, pa
 		return managedcapability.Binding{}, ErrManagedWorkerUnavailable
 	}
 	snapshot, err := w.host.Snapshot(ctx, b)
-	if err != nil || !pilotText(snapshot) {
+	if err != nil || !pilotDocumentText(snapshot) {
 		return managedcapability.Binding{}, ErrManagedWorkerUnavailable
 	}
 	raw, err := json.Marshal(b)
@@ -283,13 +283,27 @@ func pilotText(data []byte) bool {
 	}
 	return !strings.Contains(string(data), "#")
 }
+
+// Documents keep their original snapshot and chunk bytes. Only the existing
+// embedding path trims edge whitespace; the query validator remains strict.
+func pilotDocumentText(data []byte) bool {
+	if len(data) == 0 || len(data) > 300 || !utf8.Valid(data) || strings.TrimSpace(string(data)) == "" {
+		return false
+	}
+	for _, r := range string(data) {
+		if r == '#' || !(r == '\n' || (r >= 0x20 && r <= 0x7e) || (r >= 0x3400 && r <= 0x9fff) || (r >= 0x3000 && r <= 0x303f) || (r >= 0xff01 && r <= 0xff5e)) {
+			return false
+		}
+	}
+	return true
+}
 func (w *pilotManagedWorker) Prepare(ctx context.Context, p types.DocumentProcessPayload) (*managedWorkerAdmission, error) {
 	b, err := w.lookup(ctx, w.db, p.ManagedWorkID)
 	if err != nil || b.TenantID != p.TenantID || b.KnowledgeBaseID != p.KnowledgeBaseID || b.KnowledgeID != p.KnowledgeID || !strings.EqualFold(filepath.Ext(p.FileName), ".txt") || w.host.Check(ctx, b) != nil {
 		return nil, ErrManagedWorkerUnavailable
 	}
 	snapshot, err := w.host.Snapshot(ctx, b)
-	if err != nil || !pilotText(snapshot) {
+	if err != nil || !pilotDocumentText(snapshot) {
 		return nil, ErrManagedWorkerUnavailable
 	}
 	expected := strings.TrimSpace(p.FileName) + "\n" + strings.TrimSpace(string(snapshot))

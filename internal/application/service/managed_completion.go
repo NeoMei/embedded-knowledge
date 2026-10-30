@@ -317,7 +317,7 @@ func (w *pilotManagedWorker) referencesTx(ctx context.Context, tx *gorm.DB, p ma
 		return fail()
 	}
 	e := rows[0]
-	if e.SourceID != c.ID || e.ChunkID != c.ID || e.SourceType != int(types.ChunkSourceType) || e.KnowledgeBaseID != b.KnowledgeBaseID || e.Dimension != 1024 || e.IsEnabled == nil || !*e.IsEnabled || e.Content != buildKnowledgeIndexContent(&refs.Knowledge, c.Content) || managedSHA([]byte(e.Content)) != p.InputSHA256 {
+	if e.SourceID != c.ID || e.ChunkID != c.ID || e.SourceType != int(types.ChunkSourceType) || e.KnowledgeBaseID != b.KnowledgeBaseID || e.Dimension != 1024 || e.IsEnabled == nil || !*e.IsEnabled || e.Content != buildKnowledgeIndexContent(&refs.Knowledge, c.EmbeddingContent()) || managedSHA([]byte(e.Content)) != p.InputSHA256 {
 		return fail()
 	}
 	var vectors []struct{ Embedding []byte }
