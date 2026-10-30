@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"golang.org/x/sys/windows"
@@ -97,6 +98,7 @@ import(pathToFileURL(process.argv[1]).href).then(async ({createManagedKeyStorage
   await storage.verifyFile(filename);
 }).catch(()=>{console.error('production_host_key_refused'); process.exitCode=1;});`
 	command := exec.Command("node", "-e", script, absolute, filename, mode)
+	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NO_WINDOW}
 	output, err := command.CombinedOutput()
 	if err != nil && !bytes.Contains(output, []byte("production_host_key_refused")) {
 		t.Fatalf("host helper did not reach its storage boundary: %s", output)

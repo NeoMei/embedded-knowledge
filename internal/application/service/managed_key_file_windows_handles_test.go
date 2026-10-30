@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -244,6 +245,7 @@ import(pathToFileURL(process.argv[1]).href).then(async({createManagedKeyStorage}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, "node", "-e", script, helper, file)
+	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NO_WINDOW}
 	input, err := command.StdinPipe()
 	if err != nil {
 		t.Fatal(err)

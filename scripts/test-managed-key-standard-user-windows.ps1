@@ -50,7 +50,16 @@ try {
     [IO.File]::WriteAllText((Join-Path $root 'standard-compile.log'), $compile, $utf8)
     if ($LASTEXITCODE -ne 0) { throw 'Standard-user harness compilation failed' }
   } finally { Pop-Location }
-  $config = [ordered]@{ binary = $binary; helper = $helper; node = (Get-Command node.exe -ErrorAction Stop).Source; expected_sid = $sid }
+  # The hosted tool cache can be private to the administrator. Stage the
+  # identical public Node executable in this new read-only test directory.
+  $originalNode = (Get-Command node.exe -ErrorAction Stop).Source
+  $node = Join-Path $root 'node.exe'
+  $nodeInput = [IO.File]::OpenRead($originalNode)
+  $nodeOutput = [IO.FileStream]::new($node, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+  try { $nodeInput.CopyTo($nodeOutput); $nodeOutput.Flush($true) } finally { $nodeOutput.Dispose(); $nodeInput.Dispose() }
+  $nodeSHA = (Get-FileHash -LiteralPath $originalNode -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ((Get-FileHash -LiteralPath $node -Algorithm SHA256).Hash.ToLowerInvariant() -ne $nodeSHA) { throw 'Staged public Node bytes differ' }
+  $config = [ordered]@{ binary = $binary; helper = $helper; node = $node; expected_sid = $sid }
   $configPath = Join-Path $root 'standard-config.json'
   [IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json) + "`n", $utf8)
   $driver = @'
@@ -69,7 +78,10 @@ Import-Module -Name ([IO.Path]::Combine($PSHOME, 'Modules\Microsoft.PowerShell.U
 $settings = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($env:UH_NATIVE_STANDARD_CONFIGURATION))
 if ($identity.User.Value -ne $settings.expected_sid) { throw 'The synthetic standard-user identity differs' }
 [Console]::Out.WriteLine('STANDARD_NONADMIN=true')
+if (![IO.File]::Exists($settings.node)) { throw 'Staged standard-user Node unavailable' }
+[Console]::Out.WriteLine('STANDARD_NODE_VISIBLE=true')
 $env:PATH = [IO.Path]::GetDirectoryName($settings.node) + ';' + $env:SystemRoot + '\System32;' + $env:SystemRoot
+$env:PATHEXT = '.COM;.EXE;.BAT;.CMD'
 $env:WEKNORA_TEST_MANAGED_HOST_MODULE = $settings.helper
 $testStart = [Diagnostics.ProcessStartInfo]::new()
 $testStart.FileName = $settings.binary
@@ -118,11 +130,12 @@ try {
   [IO.File]::WriteAllText((Join-Path $root 'native-standard-user-errors.log'), $errors, $utf8)
   $passes = ([regex]::Matches($output, '(?m)^\s*--- PASS:')).Count
   if ($process.ExitCode -ne 0 -or $passes -ne 6 -or $output -match '(?m)^\s*--- SKIP:') { throw 'Every normal standard-user test must pass without administrator membership' }
-  $result = [ordered]@{ schema = 1; native_windows = $true; standard_user = $true; is_administrator = $false; source_commit = (& git -C $source rev-parse HEAD).Trim(); source_hashes = $sourceHashes; production_host_helper_sha256 = $helperSHA; exit_code = $process.ExitCode; pass_count = $passes; provider_operations = $false }
+  $result = [ordered]@{ schema = 1; native_windows = $true; standard_user = $true; is_administrator = $false; source_commit = (& git -C $source rev-parse HEAD).Trim(); source_hashes = $sourceHashes; production_host_helper_sha256 = $helperSHA; staged_public_node_sha256 = $nodeSHA; exit_code = $process.ExitCode; pass_count = $passes; provider_operations = $false }
   [IO.File]::WriteAllText((Join-Path $root 'native-standard-result.json'), ($result | ConvertTo-Json -Depth 8) + "`n", $utf8)
   $result | ConvertTo-Json -Depth 8
 } finally {
   if ($null -ne $process) { if (!$process.HasExited) { $process.Kill($true); $process.WaitForExit() }; $process.Dispose() }
+  if ($null -ne $node -and [IO.File]::Exists($node)) { [IO.File]::Delete($node) }
   if ($createdUser) {
     try { Get-CimInstance -ClassName Win32_UserProfile -Filter "SID='$sid'" | Remove-CimInstance -ErrorAction Stop } catch { Write-Warning 'Synthetic standard-user profile cleanup unavailable' }
     Remove-LocalUser -Name $account -ErrorAction Stop
