@@ -242,7 +242,7 @@ func (t *ListDocumentsTool) listScoped(
 		return nil, 0, err
 	}
 	for _, k := range explicit {
-		if k != nil && k.KnowledgeBaseID == kbID && knowledgeMatchesKeyword(k, keyword) {
+		if k != nil && k.ManagedWorkID == "" && k.KnowledgeBaseID == kbID && knowledgeMatchesKeyword(k, keyword) {
 			union[k.ID] = k
 		}
 	}

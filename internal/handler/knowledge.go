@@ -1939,7 +1939,14 @@ func (h *KnowledgeHandler) ClearKnowledgeBaseContents(c *gin.Context) {
 
 	ctx = types.WithExecutionTenant(c.Request.Context(), effectiveTenantID)
 
-	knowledgeList, err := h.kgService.ListKnowledgeByKnowledgeBaseID(ctx, kbID)
+	var knowledgeList []*types.Knowledge
+	if cleanup, ok := h.kgService.(interface {
+		ListKnowledgeForCleanup(context.Context, string) ([]*types.Knowledge, error)
+	}); ok {
+		knowledgeList, err = cleanup.ListKnowledgeForCleanup(ctx, kbID)
+	} else {
+		knowledgeList, err = h.kgService.ListKnowledgeByKnowledgeBaseID(ctx, kbID)
+	}
 	if err != nil {
 		logger.ErrorWithFields(ctx, err, nil)
 		c.Error(errors.NewInternalServerError("Failed to list knowledge entries").WithDetails(err.Error()))

@@ -33,6 +33,7 @@ var digest = regexp.MustCompile(`^[a-f0-9]{64}$`)
 // Binding is meaningful only when constructed from a trusted server-side
 // admission and persisted work record, not from the submitted capability.
 type Binding struct {
+	IndexBinding
 	TenantID        uint64 `json:"tenant_id"`
 	ActorID         string `json:"actor_id"`
 	AccountID       string `json:"account_id"`
@@ -83,7 +84,7 @@ func NewVerifier(issuer, audience string, keys map[string]ed25519.PublicKey, lif
 }
 
 func validBinding(b Binding) bool {
-	return b.TenantID != 0 && identifier.MatchString(b.ActorID) && identifier.MatchString(b.AccountID) && identifier.MatchString(b.TaskID) && identifier.MatchString(b.WorkID) && identifier.MatchString(b.GrantID) && identifier.MatchString(b.KnowledgeBaseID) && identifier.MatchString(b.KnowledgeID) && b.Purpose == "document-ingest" && digest.MatchString(b.InputDigest) && b.EmbeddingModel == EmbeddingModel && b.EmbeddingSpace == EmbeddingSpace
+	return validOptionalIndex(b.IndexBinding) && b.TenantID != 0 && identifier.MatchString(b.ActorID) && identifier.MatchString(b.AccountID) && identifier.MatchString(b.TaskID) && identifier.MatchString(b.WorkID) && identifier.MatchString(b.GrantID) && identifier.MatchString(b.KnowledgeBaseID) && identifier.MatchString(b.KnowledgeID) && b.Purpose == "document-ingest" && digest.MatchString(b.InputDigest) && b.EmbeddingModel == EmbeddingModel && b.EmbeddingSpace == EmbeddingSpace
 }
 
 // ActiveClaims is a short-lived, nonce-bound assertion of current access.
@@ -155,7 +156,7 @@ func (v *Verifier) verifyEnvelope(token, kind string, out any) error {
 	}
 	decoder = json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(out) != nil {
+	if StrictJSON(data, out) != nil {
 		return ErrInvalid
 	}
 	return nil
@@ -217,8 +218,10 @@ func (v *Verifier) VerifySnapshot(token string, expected Binding, nonce string, 
 }
 
 type ResultClaims struct {
-	Issuer   string `json:"issuer"`
-	Audience string `json:"audience"`
+	AttemptID            string `json:"attempt_id,omitempty"`
+	ProducerCredentialID string `json:"producer_credential_id,omitempty"`
+	Issuer               string `json:"issuer"`
+	Audience             string `json:"audience"`
 	Binding
 	Nonce         string `json:"nonce"`
 	IssuedAt      int64  `json:"issued_at"`
@@ -234,6 +237,9 @@ type ResultClaims struct {
 func (v *Verifier) VerifyResult(token string, expected Binding, nonce, callID, model, operation, wire string, content []byte) (ResultClaims, error) {
 	var claims ResultClaims
 	if !validBinding(expected) || !digest.MatchString(nonce) || !identifier.MatchString(callID) || !identifier.MatchString(model) || !identifier.MatchString(operation) || !identifier.MatchString(wire) || len(content) == 0 || len(content) > 16<<20 || v.verifyEnvelope(token, "weknora-result-v1", &claims) != nil || claims.Issuer != v.issuer || claims.Audience != v.audience || claims.Binding != expected || claims.Nonce != nonce || claims.CallID != callID || claims.Model != model || claims.Operation != operation || claims.WireOperation != wire || claims.Status != "SETTLED" || !digest.MatchString(claims.ContentSHA256) {
+		return ResultClaims{}, ErrInvalid
+	}
+	if ValidIndexBinding(expected.IndexBinding) && (!identifier.MatchString(claims.AttemptID) || !identifier.MatchString(claims.ProducerCredentialID)) {
 		return ResultClaims{}, ErrInvalid
 	}
 	sum := sha256.Sum256(content)

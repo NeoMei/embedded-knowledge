@@ -8,18 +8,21 @@ import (
 )
 
 type SearchBinding struct {
-	TenantID        uint64 `json:"tenant_id"`
-	ActorID         string `json:"actor_id"`
-	AccountID       string `json:"account_id"`
-	TaskID          string `json:"task_id"`
-	WorkID          string `json:"work_id"`
-	GrantID         string `json:"grant_id"`
-	KnowledgeBaseID string `json:"knowledge_base_id"`
-	KnowledgeID     string `json:"knowledge_id"`
-	QueryDigest     string `json:"query_digest"`
-	EmbeddingModel  string `json:"embedding_model"`
-	EmbeddingSpace  string `json:"embedding_space"`
-	RerankModel     string `json:"rerank_model"`
+	IndexBinding
+	CompletionDigest string `json:"completion_digest,omitempty"`
+	IndexWorkID      string `json:"index_work_id,omitempty"`
+	TenantID         uint64 `json:"tenant_id"`
+	ActorID          string `json:"actor_id"`
+	AccountID        string `json:"account_id"`
+	TaskID           string `json:"task_id"`
+	WorkID           string `json:"work_id"`
+	GrantID          string `json:"grant_id"`
+	KnowledgeBaseID  string `json:"knowledge_base_id"`
+	KnowledgeID      string `json:"knowledge_id"`
+	QueryDigest      string `json:"query_digest"`
+	EmbeddingModel   string `json:"embedding_model"`
+	EmbeddingSpace   string `json:"embedding_space"`
+	RerankModel      string `json:"rerank_model"`
 }
 type SearchClaims struct {
 	Issuer   string `json:"issuer"`
@@ -61,7 +64,7 @@ type SearchResultClaims struct {
 }
 
 func validSearch(b SearchBinding) bool {
-	return b.TenantID != 0 && identifier.MatchString(b.ActorID) && identifier.MatchString(b.AccountID) && identifier.MatchString(b.TaskID) && identifier.MatchString(b.WorkID) && identifier.MatchString(b.GrantID) && identifier.MatchString(b.KnowledgeBaseID) && identifier.MatchString(b.KnowledgeID) && digest.MatchString(b.QueryDigest) && b.EmbeddingModel == EmbeddingModel && b.EmbeddingSpace == EmbeddingSpace && b.RerankModel == "qwen3-rerank"
+	return validOptionalIndex(b.IndexBinding) && (b.IndexBinding == (IndexBinding{}) || (digest.MatchString(b.CompletionDigest) && identifier.MatchString(b.IndexWorkID))) && b.TenantID != 0 && identifier.MatchString(b.ActorID) && identifier.MatchString(b.AccountID) && identifier.MatchString(b.TaskID) && identifier.MatchString(b.WorkID) && identifier.MatchString(b.GrantID) && identifier.MatchString(b.KnowledgeBaseID) && identifier.MatchString(b.KnowledgeID) && digest.MatchString(b.QueryDigest) && b.EmbeddingModel == EmbeddingModel && b.EmbeddingSpace == EmbeddingSpace && b.RerankModel == "qwen3-rerank"
 }
 func (v *Verifier) validWindow(issued, expires, max int64) bool {
 	if v == nil {

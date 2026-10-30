@@ -90,6 +90,9 @@ func authorizeLoadedKnowledge(
 	if knowledge == nil {
 		return nil, fmt.Errorf("knowledge_id is required")
 	}
+	if knowledge.ManagedWorkID != "" {
+		return nil, fmt.Errorf("managed document requires its dedicated authorized read flow")
+	}
 	if !searchTargets.ContainsKB(knowledge.KnowledgeBaseID) {
 		return nil, fmt.Errorf("knowledge base %s is not within the current Agent scope", knowledge.KnowledgeBaseID)
 	}
@@ -132,6 +135,9 @@ func authorizeChunkInSearchTargets(
 	}
 	if !chunk.IsEnabled {
 		return nil, fmt.Errorf("chunk %s is disabled", chunk.ID)
+	}
+	if _, err := authorizeKnowledgeInSearchTargets(ctx, searchTargets, chunk.KnowledgeID, knowledgeService); err != nil {
+		return nil, fmt.Errorf("chunk document is not accessible: %w", err)
 	}
 	if !searchTargets.ContainsKB(chunk.KnowledgeBaseID) {
 		return nil, fmt.Errorf("knowledge base %s is not within the current Agent scope", chunk.KnowledgeBaseID)

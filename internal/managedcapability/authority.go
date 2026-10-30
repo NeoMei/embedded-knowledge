@@ -73,7 +73,7 @@ func (h *HostAuthority) Check(ctx context.Context, binding Binding) error {
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&result) != nil {
+	if StrictJSON(data, &result) != nil || decoder.Decode(&result) != nil {
 		return ErrInvalid
 	}
 	if _, err = decoder.Token(); err != io.EOF {
@@ -124,7 +124,7 @@ func (h *HostAuthority) Snapshot(ctx context.Context, binding Binding) ([]byte, 
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&result) != nil {
+	if StrictJSON(data, &result) != nil || decoder.Decode(&result) != nil {
 		return nil, ErrInvalid
 	}
 	if _, err = decoder.Token(); err != io.EOF {
@@ -143,35 +143,40 @@ func (h *HostAuthority) Snapshot(ctx context.Context, binding Binding) ([]byte, 
 // Result is read-only: the host only signs bytes returned by an authenticated
 // gateway result-read, after that gateway has verified the settled call.
 func (h *HostAuthority) Result(ctx context.Context, binding Binding, callID, model, operation, wire string) ([]byte, error) {
+	raw, _, err := h.ResultWithEvidence(ctx, binding, callID, model, operation, wire)
+	return raw, err
+}
+
+func (h *HostAuthority) ResultWithEvidence(ctx context.Context, binding Binding, callID, model, operation, wire string) ([]byte, ResultClaims, error) {
 	if h == nil || ctx == nil || !validBinding(binding) || !identifier.MatchString(callID) {
-		return nil, ErrInvalid
+		return nil, ResultClaims{}, ErrInvalid
 	}
 	var random [32]byte
 	if _, err := rand.Read(random[:]); err != nil {
-		return nil, ErrInvalid
+		return nil, ResultClaims{}, ErrInvalid
 	}
 	nonce := hex.EncodeToString(random[:])
 	body, err := json.Marshal(map[string]string{"work_id": binding.WorkID, "nonce": nonce, "call_id": callID})
 	if err != nil {
-		return nil, ErrInvalid
+		return nil, ResultClaims{}, ErrInvalid
 	}
 	endpoint := strings.TrimSuffix(h.endpoint, "/authorize") + "/result"
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return nil, ErrInvalid
+		return nil, ResultClaims{}, ErrInvalid
 	}
 	request.Header.Set("Content-Type", "application/json")
 	response, err := h.do(request, body)
 	if err != nil {
-		return nil, ErrInvalid
+		return nil, ResultClaims{}, ErrInvalid
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, ErrInvalid
+		return nil, ResultClaims{}, ErrInvalid
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, 24<<20))
 	if err != nil || len(data) >= 24<<20 {
-		return nil, ErrInvalid
+		return nil, ResultClaims{}, ErrInvalid
 	}
 	var result struct {
 		Assertion string `json:"assertion"`
@@ -179,20 +184,21 @@ func (h *HostAuthority) Result(ctx context.Context, binding Binding, callID, mod
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&result) != nil {
-		return nil, ErrInvalid
+	if StrictJSON(data, &result) != nil || decoder.Decode(&result) != nil {
+		return nil, ResultClaims{}, ErrInvalid
 	}
 	if _, err = decoder.Token(); err != io.EOF {
-		return nil, ErrInvalid
+		return nil, ResultClaims{}, ErrInvalid
 	}
 	content, err := base64.StdEncoding.DecodeString(result.Content)
 	if err != nil || base64.StdEncoding.EncodeToString(content) != result.Content {
-		return nil, ErrInvalid
+		return nil, ResultClaims{}, ErrInvalid
 	}
-	if _, err = h.verifier.VerifyResult(result.Assertion, binding, nonce, callID, model, operation, wire, content); err != nil || ctx.Err() != nil {
-		return nil, ErrInvalid
+	claims, err := h.verifier.VerifyResult(result.Assertion, binding, nonce, callID, model, operation, wire, content)
+	if err != nil || ctx.Err() != nil {
+		return nil, ResultClaims{}, ErrInvalid
 	}
-	return content, nil
+	return content, claims, nil
 }
 
 // Dispatch sends exactly one bounded embedding request through the trusted

@@ -54,7 +54,7 @@ func (h *HostAuthority) SearchCheck(ctx context.Context, b SearchBinding) error 
 	var result struct {
 		Assertion string `json:"assertion"`
 	}
-	if json.Unmarshal(raw, &result) != nil {
+	if StrictJSON(raw, &result) != nil {
 		return ErrInvalid
 	}
 	_, err = h.verifier.VerifySearchActive(result.Assertion, b, nonce)
@@ -69,7 +69,7 @@ func (h *HostAuthority) SearchSnapshot(ctx context.Context, b SearchBinding) ([]
 		Assertion string `json:"assertion"`
 		Content   string `json:"content"`
 	}
-	if json.Unmarshal(raw, &result) != nil {
+	if StrictJSON(raw, &result) != nil {
 		return nil, ErrInvalid
 	}
 	body, err := base64.StdEncoding.DecodeString(result.Content)
@@ -96,7 +96,7 @@ func (h *HostAuthority) SearchResult(ctx context.Context, b SearchBinding, callI
 		Assertion string `json:"assertion"`
 		Content   string `json:"content"`
 	}
-	if json.Unmarshal(raw, &result) != nil {
+	if StrictJSON(raw, &result) != nil {
 		return nil, ErrInvalid
 	}
 	body, err := base64.StdEncoding.DecodeString(result.Content)

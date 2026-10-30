@@ -1,0 +1,383 @@
+{
+  "version": "managed-worker-contract-v1",
+  "transport": {
+    "path": "/api/v1/knowledge-bases/{kb}/knowledge/managed-status",
+    "method": "POST",
+    "body": {
+      "capability": "<four-part Ed25519 signed envelope>"
+    },
+    "request_header": "X-WeKnora-Managed-Proof",
+    "request_envelope_kind": "weknora-request-v1",
+    "envelope_format": "kind.host-v1.base64url_unpadded(ordered_JSON).base64url_unpadded(Ed25519(prefix))",
+    "request_nonce_consumed_once": true,
+    "maximum_lifetime_seconds": 30
+  },
+  "signing": {
+    "existing_host_key_only": true,
+    "callback_key_fixture_only": "0123456789abcdef0123456789abcdef",
+    "response_mac_domain": "managed-completion-response-v1",
+    "response_mac": "HMAC-SHA256(HMAC-SHA256(callback_key, UTF8(domain)), UTF8(ordered_reply_without_mac))",
+    "callbacks": "existing weknora-callback-v2 authentication; fresh nonce; no paid dispatch"
+  },
+  "binding": {
+    "namespace_id": "1111111111111111111111111111111111111111111111111111111111111111",
+    "storage_id": "2222222222222222222222222222222222222222222222222222222222222222",
+    "storage_generation": "3333333333333333333333333333333333333333333333333333333333333333",
+    "embedding_policy_digest": "4444444444444444444444444444444444444444444444444444444444444444",
+    "opaque_pin": "5555555555555555555555555555555555555555555555555555555555555555",
+    "route_generation": "6666666666666666666666666666666666666666666666666666666666666666",
+    "index_revision": 1,
+    "tenant_id": 1,
+    "actor_id": "fixture-actor",
+    "account_id": "fixture-payer",
+    "task_id": "fixture-task",
+    "work_id": "fixture-ingest-work",
+    "grant_id": "fixture-grant",
+    "knowledge_base_id": "fixture-kb",
+    "knowledge_id": "11111111-1111-4111-8111-111111111111",
+    "purpose": "document-ingest",
+    "input_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+    "embedding_model": "unihub-text-embedding-v4",
+    "embedding_space": "aliyun/text-embedding-v4/v4/1024/text"
+  },
+  "storage": {
+    "version": "managed-storage-v1",
+    "namespace_id": "1111111111111111111111111111111111111111111111111111111111111111",
+    "tenant_id": 1,
+    "actor_id": "fixture-actor",
+    "account_id": "fixture-payer",
+    "knowledge_base_id": "fixture-kb",
+    "work_id": "fixture-ingest-work",
+    "host_boot_id": "8888888888888888888888888888888888888888888888888888888888888888",
+    "issued_at": 1793318400,
+    "expires_at": 1793318430
+  },
+  "discover": {
+    "version": "completed-index-discover-v1",
+    "purpose": "completion_discover",
+    "binding": {
+      "namespace_id": "1111111111111111111111111111111111111111111111111111111111111111",
+      "storage_id": "2222222222222222222222222222222222222222222222222222222222222222",
+      "storage_generation": "3333333333333333333333333333333333333333333333333333333333333333",
+      "embedding_policy_digest": "4444444444444444444444444444444444444444444444444444444444444444",
+      "opaque_pin": "5555555555555555555555555555555555555555555555555555555555555555",
+      "route_generation": "6666666666666666666666666666666666666666666666666666666666666666",
+      "index_revision": 1,
+      "tenant_id": 1,
+      "actor_id": "fixture-actor",
+      "account_id": "fixture-payer",
+      "task_id": "fixture-task",
+      "work_id": "fixture-ingest-work",
+      "grant_id": "fixture-grant",
+      "knowledge_base_id": "fixture-kb",
+      "knowledge_id": "11111111-1111-4111-8111-111111111111",
+      "purpose": "document-ingest",
+      "input_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+      "embedding_model": "unihub-text-embedding-v4",
+      "embedding_space": "aliyun/text-embedding-v4/v4/1024/text"
+    },
+    "snapshot_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+    "host_boot_id": "8888888888888888888888888888888888888888888888888888888888888888",
+    "worker_boot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "issued_at": 1793318400,
+    "expires_at": 1793318430
+  },
+  "use": {
+    "version": "completed-index-use-v1",
+    "purpose": "completed_index_read",
+    "namespace_id": "1111111111111111111111111111111111111111111111111111111111111111",
+    "tenant_id": 1,
+    "actor_id": "fixture-actor",
+    "account_id": "fixture-payer",
+    "knowledge_base_id": "fixture-kb",
+    "knowledge_id": "11111111-1111-4111-8111-111111111111",
+    "work_id": "fixture-ingest-work",
+    "storage_id": "2222222222222222222222222222222222222222222222222222222222222222",
+    "storage_generation": "3333333333333333333333333333333333333333333333333333333333333333",
+    "index_revision": 1,
+    "completion_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "host_boot_id": "8888888888888888888888888888888888888888888888888888888888888888",
+    "worker_boot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "issued_at": 1793318400,
+    "expires_at": 1793318430
+  },
+  "replies": {
+    "storage": {
+      "version": "managed-storage-response-v1",
+      "scope": {
+        "version": "managed-storage-v1",
+        "namespace_id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "tenant_id": 1,
+        "actor_id": "fixture-actor",
+        "account_id": "fixture-payer",
+        "knowledge_base_id": "fixture-kb",
+        "work_id": "fixture-ingest-work",
+        "host_boot_id": "8888888888888888888888888888888888888888888888888888888888888888",
+        "issued_at": 1793318400,
+        "expires_at": 1793318430
+      },
+      "nonce": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "storage_id": "2222222222222222222222222222222222222222222222222222222222222222",
+      "storage_generation": "3333333333333333333333333333333333333333333333333333333333333333",
+      "worker_boot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "driver": "sqlite",
+      "issued_at": 1793318400,
+      "expires_at": 1793318430,
+      "mac": "9783625e4a13de049df8da783964b512691bb5553bec5a2e97ffae3077a33051"
+    },
+    "discover": {
+      "version": "completed-index-discovery-response-v1",
+      "scope": {
+        "version": "completed-index-discover-v1",
+        "purpose": "completion_discover",
+        "binding": {
+          "namespace_id": "1111111111111111111111111111111111111111111111111111111111111111",
+          "storage_id": "2222222222222222222222222222222222222222222222222222222222222222",
+          "storage_generation": "3333333333333333333333333333333333333333333333333333333333333333",
+          "embedding_policy_digest": "4444444444444444444444444444444444444444444444444444444444444444",
+          "opaque_pin": "5555555555555555555555555555555555555555555555555555555555555555",
+          "route_generation": "6666666666666666666666666666666666666666666666666666666666666666",
+          "index_revision": 1,
+          "tenant_id": 1,
+          "actor_id": "fixture-actor",
+          "account_id": "fixture-payer",
+          "task_id": "fixture-task",
+          "work_id": "fixture-ingest-work",
+          "grant_id": "fixture-grant",
+          "knowledge_base_id": "fixture-kb",
+          "knowledge_id": "11111111-1111-4111-8111-111111111111",
+          "purpose": "document-ingest",
+          "input_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+          "embedding_model": "unihub-text-embedding-v4",
+          "embedding_space": "aliyun/text-embedding-v4/v4/1024/text"
+        },
+        "snapshot_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+        "host_boot_id": "8888888888888888888888888888888888888888888888888888888888888888",
+        "worker_boot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "issued_at": 1793318400,
+        "expires_at": 1793318430
+      },
+      "nonce": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "completion_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "reference_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "index_revision": 1,
+      "call_id": "fixture-call",
+      "attempt_id": "fixture-attempt",
+      "producer_credential_id": "fixture-producer-credential",
+      "input_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "raw_result_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "float32_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "state": "ready",
+      "issued_at": 1793318400,
+      "expires_at": 1793318430,
+      "mac": "bf005aad0e9513bd9d4a4cc49f34e0163caa2cdeb28beb84a237ac1968afda80"
+    },
+    "use": {
+      "version": "completed-index-response-v1",
+      "scope": {
+        "version": "completed-index-use-v1",
+        "purpose": "completed_index_read",
+        "namespace_id": "1111111111111111111111111111111111111111111111111111111111111111",
+        "tenant_id": 1,
+        "actor_id": "fixture-actor",
+        "account_id": "fixture-payer",
+        "knowledge_base_id": "fixture-kb",
+        "knowledge_id": "11111111-1111-4111-8111-111111111111",
+        "work_id": "fixture-ingest-work",
+        "storage_id": "2222222222222222222222222222222222222222222222222222222222222222",
+        "storage_generation": "3333333333333333333333333333333333333333333333333333333333333333",
+        "index_revision": 1,
+        "completion_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "host_boot_id": "8888888888888888888888888888888888888888888888888888888888888888",
+        "worker_boot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "issued_at": 1793318400,
+        "expires_at": 1793318430
+      },
+      "nonce": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "reference_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "state": "ready",
+      "issued_at": 1793318400,
+      "expires_at": 1793318430,
+      "mac": "d9dfde02fbd4e05ec449ae608395f7a0dfc111b49eff801c50deacd1932333cb"
+    }
+  },
+  "callback_examples": {
+    "storage": {
+      "path": "/internal/knowledge-work/storage-authorize",
+      "request": {
+        "nonce": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "scope": {
+          "version": "managed-storage-v1",
+          "namespace_id": "1111111111111111111111111111111111111111111111111111111111111111",
+          "tenant_id": 1,
+          "actor_id": "fixture-actor",
+          "account_id": "fixture-payer",
+          "knowledge_base_id": "fixture-kb",
+          "work_id": "fixture-ingest-work",
+          "host_boot_id": "8888888888888888888888888888888888888888888888888888888888888888",
+          "issued_at": 1793318400,
+          "expires_at": 1793318430
+        }
+      },
+      "response": {
+        "assertion": "<signed envelope>"
+      },
+      "assertion_kind": "managed-storage-auth-v1",
+      "assertion_payload": {
+        "scope": {
+          "version": "managed-storage-v1",
+          "namespace_id": "1111111111111111111111111111111111111111111111111111111111111111",
+          "tenant_id": 1,
+          "actor_id": "fixture-actor",
+          "account_id": "fixture-payer",
+          "knowledge_base_id": "fixture-kb",
+          "work_id": "fixture-ingest-work",
+          "host_boot_id": "8888888888888888888888888888888888888888888888888888888888888888",
+          "issued_at": 1793318400,
+          "expires_at": 1793318430
+        },
+        "nonce": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issued_at": 1793318400,
+        "expires_at": 1793318430
+      }
+    },
+    "discover": {
+      "path": "/internal/knowledge-work/completed-authorize",
+      "request": {
+        "nonce": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "scope": {
+          "version": "completed-index-discover-v1",
+          "purpose": "completion_discover",
+          "binding": {
+            "namespace_id": "1111111111111111111111111111111111111111111111111111111111111111",
+            "storage_id": "2222222222222222222222222222222222222222222222222222222222222222",
+            "storage_generation": "3333333333333333333333333333333333333333333333333333333333333333",
+            "embedding_policy_digest": "4444444444444444444444444444444444444444444444444444444444444444",
+            "opaque_pin": "5555555555555555555555555555555555555555555555555555555555555555",
+            "route_generation": "6666666666666666666666666666666666666666666666666666666666666666",
+            "index_revision": 1,
+            "tenant_id": 1,
+            "actor_id": "fixture-actor",
+            "account_id": "fixture-payer",
+            "task_id": "fixture-task",
+            "work_id": "fixture-ingest-work",
+            "grant_id": "fixture-grant",
+            "knowledge_base_id": "fixture-kb",
+            "knowledge_id": "11111111-1111-4111-8111-111111111111",
+            "purpose": "document-ingest",
+            "input_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+            "embedding_model": "unihub-text-embedding-v4",
+            "embedding_space": "aliyun/text-embedding-v4/v4/1024/text"
+          },
+          "snapshot_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+          "host_boot_id": "8888888888888888888888888888888888888888888888888888888888888888",
+          "worker_boot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "issued_at": 1793318400,
+          "expires_at": 1793318430
+        }
+      },
+      "response": {
+        "assertion": "<signed envelope>"
+      },
+      "assertion_kind": "completed-index-discover-auth-v1",
+      "assertion_payload": {
+        "scope": {
+          "version": "completed-index-discover-v1",
+          "purpose": "completion_discover",
+          "binding": {
+            "namespace_id": "1111111111111111111111111111111111111111111111111111111111111111",
+            "storage_id": "2222222222222222222222222222222222222222222222222222222222222222",
+            "storage_generation": "3333333333333333333333333333333333333333333333333333333333333333",
+            "embedding_policy_digest": "4444444444444444444444444444444444444444444444444444444444444444",
+            "opaque_pin": "5555555555555555555555555555555555555555555555555555555555555555",
+            "route_generation": "6666666666666666666666666666666666666666666666666666666666666666",
+            "index_revision": 1,
+            "tenant_id": 1,
+            "actor_id": "fixture-actor",
+            "account_id": "fixture-payer",
+            "task_id": "fixture-task",
+            "work_id": "fixture-ingest-work",
+            "grant_id": "fixture-grant",
+            "knowledge_base_id": "fixture-kb",
+            "knowledge_id": "11111111-1111-4111-8111-111111111111",
+            "purpose": "document-ingest",
+            "input_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+            "embedding_model": "unihub-text-embedding-v4",
+            "embedding_space": "aliyun/text-embedding-v4/v4/1024/text"
+          },
+          "snapshot_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+          "host_boot_id": "8888888888888888888888888888888888888888888888888888888888888888",
+          "worker_boot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "issued_at": 1793318400,
+          "expires_at": 1793318430
+        },
+        "nonce": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issued_at": 1793318400,
+        "expires_at": 1793318430
+      }
+    },
+    "use": {
+      "path": "/internal/knowledge-work/completed-authorize",
+      "request": {
+        "nonce": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "scope": {
+          "version": "completed-index-use-v1",
+          "purpose": "completed_index_read",
+          "namespace_id": "1111111111111111111111111111111111111111111111111111111111111111",
+          "tenant_id": 1,
+          "actor_id": "fixture-actor",
+          "account_id": "fixture-payer",
+          "knowledge_base_id": "fixture-kb",
+          "knowledge_id": "11111111-1111-4111-8111-111111111111",
+          "work_id": "fixture-ingest-work",
+          "storage_id": "2222222222222222222222222222222222222222222222222222222222222222",
+          "storage_generation": "3333333333333333333333333333333333333333333333333333333333333333",
+          "index_revision": 1,
+          "completion_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "host_boot_id": "8888888888888888888888888888888888888888888888888888888888888888",
+          "worker_boot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "issued_at": 1793318400,
+          "expires_at": 1793318430
+        }
+      },
+      "response": {
+        "assertion": "<signed envelope>"
+      },
+      "assertion_kind": "completed-index-auth-v1",
+      "assertion_payload": {
+        "scope": {
+          "version": "completed-index-use-v1",
+          "purpose": "completed_index_read",
+          "namespace_id": "1111111111111111111111111111111111111111111111111111111111111111",
+          "tenant_id": 1,
+          "actor_id": "fixture-actor",
+          "account_id": "fixture-payer",
+          "knowledge_base_id": "fixture-kb",
+          "knowledge_id": "11111111-1111-4111-8111-111111111111",
+          "work_id": "fixture-ingest-work",
+          "storage_id": "2222222222222222222222222222222222222222222222222222222222222222",
+          "storage_generation": "3333333333333333333333333333333333333333333333333333333333333333",
+          "index_revision": 1,
+          "completion_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "host_boot_id": "8888888888888888888888888888888888888888888888888888888888888888",
+          "worker_boot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "issued_at": 1793318400,
+          "expires_at": 1793318430
+        },
+        "nonce": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "issued_at": 1793318400,
+        "expires_at": 1793318430
+      }
+    }
+  },
+  "notes": [
+    "All examples are synthetic; digests are typed placeholders, never accepted as real index evidence.",
+    "Host must have exact durable PENDING before signing discover. Scope binding is exact historical provenance, not a renewed paid capability.",
+    "Use callback must current-check product actor/session/member/owner/account and route/pin with zero-spend metadata. No old ingest token required.",
+    "Storage handshake is current-authorized but does not adopt missing/changed host storage anchors.",
+    "Canonical order is Go struct declaration order; MAC excludes omitted mac field; do not include whitespace or success/data wrapper.",
+    "Existing task/actor/KB/UUID identifiers keep existing format. New opaque namespace/storage/boot/pin/generation are lowercase 64 hex.",
+    "Completed-ready old ingest status is refused; host uses discovery then use.",
+    "Search remains separately signed weknora-search-v1 with IndexBinding + completion_digest + index_work_id; search work/grant/task differs from ingest."
+  ]
+}

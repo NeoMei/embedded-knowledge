@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"gorm.io/gorm"
+	"math"
 	"strconv"
 	"strings"
 
@@ -42,6 +44,18 @@ func (s *knowledgeBaseService) ManagedHybridSearch(ctx context.Context, kbID, ca
 	indexed, err := w.lookup(ctx, w.db, document.ManagedWorkID)
 	if err != nil || indexed.TenantID != tenant || indexed.KnowledgeBaseID != kbID || indexed.KnowledgeID != b.KnowledgeID || indexed.EmbeddingModel != b.EmbeddingModel || indexed.EmbeddingSpace != b.EmbeddingSpace {
 		return nil, ErrManagedWorkerUnavailable
+	}
+	if !managedcapability.ValidIndexBinding(b.IndexBinding) || b.IndexBinding != indexed.IndexBinding || b.IndexWorkID != indexed.WorkID || b.ActorID != indexed.ActorID || b.AccountID != indexed.AccountID {
+		return nil, ErrManagedWorkerUnavailable
+	}
+	var completion managedCompletion
+	err = w.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var e error
+		completion, _, e = w.ReadCompletedIndexTx(ctx, tx, b.IndexWorkID, b.IndexRevision, b.CompletionDigest)
+		return e
+	})
+	if err != nil {
+		return nil, err
 	}
 	query, err := w.host.SearchSnapshot(ctx, b)
 	if err != nil || !pilotText(query) {
@@ -122,17 +136,60 @@ func (s *knowledgeBaseService) ManagedHybridSearch(ctx context.Context, kbID, ca
 		_ = wire
 		return confirmed, nil
 	}
-	managedCtx := api.WithManagedJSON(ctx, dispatch)
-	params := types.SearchParams{QueryText: string(query), MatchCount: 1, DisableKeywordsMatch: true, KnowledgeIDs: []string{b.KnowledgeID}, SkipContextEnrichment: true, Rerank: &types.RerankOptions{TopK: 1}}
-	result, err := s.HybridSearchWithRerank(managedCtx, kbID, params)
+	// Paid callbacks and journal writes are outside both short read transactions.
+	callCtx := api.WithManagedBatchStart(api.WithManagedJSON(ctx, dispatch), 0)
+	embedBody, _ := json.Marshal(struct {
+		Model      string   `json:"model"`
+		Input      []string `json:"input"`
+		Dimensions int      `json:"dimensions"`
+	}{b.EmbeddingModel, []string{string(query)}, 1024})
+	raw, err := dispatch(callCtx, b.EmbeddingModel, "", embedBody)
 	if err != nil {
 		return nil, err
 	}
-	for _, r := range result.Results {
-		if r == nil || r.KnowledgeID != b.KnowledgeID {
-			return nil, ErrManagedWorkerUnavailable
-		}
+	vector, err := managedVector(raw)
+	if err != nil {
+		return nil, err
 	}
+	var candidate *types.SearchResult
+	err = w.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var e error
+		candidate, e = w.ReadManagedCandidatesTx(ctx, tx, completion, vector)
+		return e
+	})
+	if err != nil {
+		return nil, err
+	}
+	rerankBody, _ := json.Marshal(struct {
+		Model string `json:"model"`
+		Input struct {
+			Query     string   `json:"query"`
+			Documents []string `json:"documents"`
+		} `json:"input"`
+		Parameters struct {
+			TopN            int  `json:"top_n"`
+			ReturnDocuments bool `json:"return_documents"`
+		} `json:"parameters"`
+	}{Model: b.RerankModel, Input: struct {
+		Query     string   `json:"query"`
+		Documents []string `json:"documents"`
+	}{string(query), []string{candidate.Content}}, Parameters: struct {
+		TopN            int  `json:"top_n"`
+		ReturnDocuments bool `json:"return_documents"`
+	}{1, false}})
+	raw, err = dispatch(callCtx, b.RerankModel, "", rerankBody)
+	if err != nil {
+		return nil, err
+	}
+	score, err := managedRerankScore(raw)
+	if err != nil {
+		return nil, err
+	}
+	candidate.Score = score
+	if err = w.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error { return w.RevalidateCompletionTx(ctx, tx, completion) }); err != nil {
+		return nil, err
+	}
+	result := &types.RetrievalResult{Results: []*types.SearchResult{candidate}}
 	// Retrieval and reranking may outlive the admission. Check live authority
 	// again, then the original capability window after that asynchronous check.
 	if w.host.SearchCheck(ctx, b) != nil {
@@ -150,6 +207,24 @@ func (s *knowledgeBaseService) ManagedHybridSearch(ctx context.Context, kbID, ca
 		return nil, ErrManagedWorkerUnavailable
 	}
 	return result, nil
+}
+
+func managedRerankScore(raw []byte) (float64, error) {
+	var ranked struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+		Output  struct {
+			Results []struct {
+				Index *int     `json:"index"`
+				Score *float64 `json:"relevance_score"`
+			} `json:"results"`
+		} `json:"output"`
+	}
+	var rankShape any
+	if managedcapability.StrictJSON(raw, &rankShape) != nil || json.Unmarshal(raw, &ranked) != nil || ranked.Code != "" || len(ranked.Output.Results) != 1 || ranked.Output.Results[0].Index == nil || *ranked.Output.Results[0].Index != 0 || ranked.Output.Results[0].Score == nil || math.IsNaN(*ranked.Output.Results[0].Score) || math.IsInf(*ranked.Output.Results[0].Score, 0) || *ranked.Output.Results[0].Score < 0 || *ranked.Output.Results[0].Score > 1 {
+		return 0, ErrManagedWorkerUnavailable
+	}
+	return *ranked.Output.Results[0].Score, nil
 }
 
 func (s *knowledgeBaseService) AuthorizeManagedSearch(ctx context.Context, tenant uint64, kb, method, path string, body []byte, capability, proof string) error {

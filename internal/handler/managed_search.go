@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/Tencent/WeKnora/internal/errors"
+	"github.com/Tencent/WeKnora/internal/managedcapability"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/gin-gonic/gin"
 )
@@ -38,7 +39,7 @@ func (h *KnowledgeBaseHandler) ManagedHybridSearch(c *gin.Context) {
 	var body struct {
 		Capability string `json:"capability"`
 	}
-	if dec.Decode(&body) != nil || body.Capability == "" || len(body.Capability) > 16384 {
+	if managedcapability.StrictJSON(raw, &body) != nil || dec.Decode(&body) != nil || body.Capability == "" || len(body.Capability) > 16384 {
 		c.Error(errors.NewBadRequestError("Invalid request parameters"))
 		return
 	}

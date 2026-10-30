@@ -69,12 +69,12 @@ func TestManagedStatusRequiresFreshBoundProof(t *testing.T) {
 	sum := sha256.Sum256(body)
 	path := "/api/v1/knowledge-bases/kb/knowledge/managed-status"
 	proof := sign("weknora-request-v1", managedcapability.RequestClaims{Issuer: "issuer", Audience: "weknora", Method: "POST", Path: path, BodySHA256: hex.EncodeToString(sum[:]), Nonce: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", WorkID: binding.WorkID, ActorID: binding.ActorID, AccountID: binding.AccountID, IssuedAt: now, ExpiresAt: now + 30})
-	repo := &summaryColumnsRepo{t: t, knowledge: &types.Knowledge{ID: "doc", TenantID: 1, KnowledgeBaseID: "kb", ManagedWorkID: "work", ParseStatus: types.ParseStatusCompleted}}
+	repo := &summaryColumnsRepo{t: t, knowledge: &types.Knowledge{ID: "doc", TenantID: 1, KnowledgeBaseID: "kb", ManagedWorkID: "work", ParseStatus: types.ParseStatusProcessing}}
 	s := &knowledgeService{repo: repo, managedWorker: worker}
 	out, err := s.ManagedKnowledgeStatus(context.Background(), 1, "kb", "POST", path, body, cap, proof)
 	require.NoError(t, err)
 	require.Equal(t, "doc", out.ID)
-	require.Equal(t, types.ParseStatusCompleted, out.ParseStatus)
+	require.Equal(t, types.ParseStatusProcessing, out.ParseStatus)
 	_, err = s.ManagedKnowledgeStatus(context.Background(), 1, "kb", "POST", path, body, cap, proof)
 	require.Error(t, err, "replayed proof")
 	_, err = s.ManagedKnowledgeStatus(context.Background(), 1, "kb", "POST", path, append(body, ' '), cap, proof)

@@ -43,9 +43,9 @@ func (r managedDeliveryKBRepo) GetKnowledgeBaseByIDs(context.Context, []string) 
 	return []*types.KnowledgeBase{{ID: "kb", TenantID: 1, VectorStoreID: &store}}, nil
 }
 
-// Exercise the real no-candidates search path: it must not return successful
-// results after authority was lost, even when no model call was necessary.
-func TestManagedSearchRechecksAuthorityBeforeDelivery(t *testing.T) {
+// Legacy registrations cannot be silently adopted as durable completions.
+// Current authority alone never permits retrieval without persisted provenance.
+func TestManagedSearchRejectsLegacyIndexesWithoutDurableCompletion(t *testing.T) {
 	for _, mode := range []string{"active", "revoked_during_search", "expired_during_search", "expired_during_final_check", "legacy_index", "conflicting_index", "index_changed_during_search"} {
 		t.Run(mode, func(t *testing.T) {
 			const epoch int64 = 1800000000
@@ -138,21 +138,10 @@ func TestManagedSearchRechecksAuthorityBeforeDelivery(t *testing.T) {
 			}
 			ctx := context.WithValue(context.Background(), types.TenantIDContextKey, uint64(1))
 			result, err := svc.ManagedHybridSearch(ctx, "kb", capability)
-			if mode == "legacy_index" || mode == "conflicting_index" {
-				require.False(t, searched, "unknown or conflicting index space must not reach retrieval")
-				require.ErrorIs(t, err, ErrManagedWorkerUnavailable)
-				require.Nil(t, result)
-				return
-			}
-			require.True(t, searched)
-			if mode == "active" {
-				require.NoError(t, err)
-				require.NotNil(t, result)
-				require.Empty(t, result.Results)
-				return
-			}
+			require.False(t, searched, "legacy in-memory index without durable storage/completion must never enter retrieval")
 			require.ErrorIs(t, err, ErrManagedWorkerUnavailable)
-			require.Nil(t, result, "lost authority must not deliver a successful result")
+			require.Nil(t, result)
+
 		})
 	}
 }

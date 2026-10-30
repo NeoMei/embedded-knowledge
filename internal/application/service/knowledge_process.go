@@ -232,7 +232,7 @@ func finalizeIndexedKnowledgeState(
 	hasPendingMultimodal bool,
 	now time.Time,
 ) {
-	if hasPendingMultimodal || textChunkCount > 0 {
+	if knowledge.ManagedWorkID != "" || hasPendingMultimodal || textChunkCount > 0 {
 		knowledge.ParseStatus = types.ParseStatusProcessing
 		knowledge.SummaryStatus = types.SummaryStatusNone
 	} else {
@@ -247,6 +247,10 @@ func finalizeIndexedKnowledgeState(
 	}
 
 	knowledge.EnableStatus = "enabled"
+	if knowledge.ManagedWorkID != "" {
+		// Only the validated completion transaction may make managed data ready.
+		knowledge.EnableStatus = "disabled"
+	}
 	knowledge.StorageSize = totalStorageSize
 	knowledge.ProcessedAt = &now
 	knowledge.UpdatedAt = now
@@ -259,6 +263,9 @@ func finalizeIndexedKnowledgeState(
 // failure while it is visibly running again.
 func markKnowledgeProcessing(knowledge *types.Knowledge, now time.Time) {
 	knowledge.ParseStatus = types.ParseStatusProcessing
+	if knowledge.ManagedWorkID != "" {
+		knowledge.EnableStatus = "disabled"
+	}
 	knowledge.ErrorMessage = ""
 	knowledge.UpdatedAt = now
 }
@@ -3575,6 +3582,9 @@ func (s *knowledgeService) ProcessManualUpdate(ctx context.Context, t *asynq.Tas
 	if knowledge == nil {
 		logger.Warnf(ctx, "ProcessManualUpdate: knowledge not found: %s", payload.KnowledgeID)
 		return nil
+	}
+	if knowledge.ManagedWorkID != "" {
+		return ErrManagedWorkerUnavailable
 	}
 
 	if err := validateProcessingKnowledge(knowledge,

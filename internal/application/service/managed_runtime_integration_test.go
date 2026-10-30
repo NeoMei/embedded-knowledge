@@ -121,7 +121,7 @@ func TestPilotRegistrationParserAndIndexRequireSignedSettledResult(t *testing.T)
 					result, err := json.Marshal(map[string]any{"data": []any{map[string]any{"index": 0, "embedding": make([]float32, managedcapability.EmbeddingDimensions)}}})
 					require.NoError(t, err)
 					sum := sha256.Sum256(result)
-					claims := managedcapability.ResultClaims{Issuer: active.Issuer, Audience: active.Audience, Binding: binding, Nonce: request.Nonce, IssuedAt: issued, ExpiresAt: issued + 30, CallID: request.CallID, Model: managedcapability.EmbeddingModel, Operation: "embedding", WireOperation: "embeddings.create", Status: "SETTLED", ContentSHA256: hex.EncodeToString(sum[:])}
+					claims := managedcapability.ResultClaims{AttemptID: "fixture-attempt", ProducerCredentialID: "fixture-producer", Issuer: active.Issuer, Audience: active.Audience, Binding: binding, Nonce: request.Nonce, IssuedAt: issued, ExpiresAt: issued + 30, CallID: request.CallID, Model: managedcapability.EmbeddingModel, Operation: "embedding", WireOperation: "embeddings.create", Status: "SETTLED", ContentSHA256: hex.EncodeToString(sum[:])}
 					require.NoError(t, json.NewEncoder(w).Encode(map[string]string{"assertion": sign("weknora-result-v1", claims), "content": base64.StdEncoding.EncodeToString(result)}))
 				default:
 					w.WriteHeader(404)
@@ -136,6 +136,8 @@ func TestPilotRegistrationParserAndIndexRequireSignedSettledResult(t *testing.T)
 			require.NoError(t, err)
 			worker, err := newPilotManagedWorker(db, verifier, hostAuthority, journal, []byte("9876543210abcdef9876543210abcdef"))
 			require.NoError(t, err)
+			binding.IndexBinding = managedcapability.IndexBinding{NamespaceID: strings.Repeat("1", 64), StorageID: worker.storage.StorageID, StorageGeneration: worker.storage.StorageGeneration, EmbeddingPolicyDigest: strings.Repeat("4", 64), OpaquePin: strings.Repeat("5", 64), RouteGeneration: strings.Repeat("6", 64), IndexRevision: 1}
+			capability = sign("weknora-cap-v1", managedcapability.Claims{Issuer: "superwagie-knowledge-v1", Audience: "weknora", Binding: binding, IssuedAt: now.Add(-time.Second).Unix(), ExpiresAt: now.Add(time.Minute).Unix()})
 			repo := &refKnowledgeRepoStub{}
 			queue := &recordManagedQueue{}
 			service := newReferenceService(repo, &createKnowledgeTaskEnqueuerStub{})

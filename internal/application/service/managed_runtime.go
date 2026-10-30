@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -54,11 +55,14 @@ func (managedRegistrationMeta) TableName() string { return "managed_knowledge_re
 func (managedRegistration) TableName() string { return "managed_knowledge_registration" }
 
 type pilotManagedWorker struct {
-	db       *gorm.DB
-	verifier *managedcapability.Verifier
-	host     *managedcapability.HostAuthority
-	journal  *managedjournal.Journal
-	aead     cipher.AEAD
+	db            *gorm.DB
+	verifier      *managedcapability.Verifier
+	host          *managedcapability.HostAuthority
+	journal       *managedjournal.Journal
+	aead          cipher.AEAD
+	completionKey []byte
+	storage       managedStoreMeta
+	workerBootID  string
 }
 
 // newPilotManagedWorker is only constructed with server-controlled dependencies.
@@ -156,7 +160,11 @@ func newPilotManagedWorker(db *gorm.DB, verifier *managedcapability.Verifier, ho
 	if err != nil {
 		return nil, err
 	}
-	return &pilotManagedWorker{db: db, verifier: verifier, host: host, journal: journal, aead: aead}, nil
+	w := &pilotManagedWorker{db: db, verifier: verifier, host: host, journal: journal, aead: aead}
+	if err := w.initCompletion(key); err != nil {
+		return nil, err
+	}
+	return w, nil
 }
 
 // Proofs are consumed atomically and retained as replay tombstones. Cleanup
@@ -183,7 +191,7 @@ func (w *pilotManagedWorker) Register(ctx context.Context, tenant uint64, kb, pa
 		return managedcapability.Binding{}, ErrManagedWorkerUnavailable
 	}
 	b := claims.Binding
-	if b.TenantID != tenant || b.KnowledgeBaseID != kb || !strings.EqualFold(filepath.Ext(path), ".txt") || w.host.Check(ctx, b) != nil {
+	if !managedcapability.ValidIndexBinding(b.IndexBinding) || w.checkStorageTx(w.db, b.IndexBinding) != nil || b.TenantID != tenant || b.KnowledgeBaseID != kb || !strings.EqualFold(filepath.Ext(path), ".txt") || w.host.Check(ctx, b) != nil {
 		return managedcapability.Binding{}, ErrManagedWorkerUnavailable
 	}
 	snapshot, err := w.host.Snapshot(ctx, b)
@@ -232,17 +240,27 @@ func (w *pilotManagedWorker) lookup(ctx context.Context, db *gorm.DB, workID str
 	return b, nil
 }
 func validateManagedEmbeddingResult(raw []byte) error {
+	var shape any
+	if managedcapability.StrictJSON(raw, &shape) != nil {
+		return ErrManagedWorkerUnavailable
+	}
 	var response struct {
 		Data []struct {
-			Index     *int          `json:"index"`
-			Embedding []json.Number `json:"embedding"`
+			Index     *int  `json:"index"`
+			Embedding []any `json:"embedding"`
 		} `json:"data"`
 	}
-	if json.Unmarshal(raw, &response) != nil || len(response.Data) != 1 || response.Data[0].Index == nil || *response.Data[0].Index != 0 || len(response.Data[0].Embedding) != managedcapability.EmbeddingDimensions {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if decoder.Decode(&response) != nil || len(response.Data) != 1 || response.Data[0].Index == nil || *response.Data[0].Index != 0 || len(response.Data[0].Embedding) != managedcapability.EmbeddingDimensions {
 		return ErrManagedWorkerUnavailable
 	}
 	for _, value := range response.Data[0].Embedding {
-		n, err := value.Float64()
+		number, ok := value.(json.Number)
+		if !ok {
+			return ErrManagedWorkerUnavailable
+		}
+		n, err := number.Float64()
 		if err != nil || math.IsNaN(n) || math.IsInf(n, 0) || math.Abs(n) > math.MaxFloat32 {
 			return ErrManagedWorkerUnavailable
 		}
@@ -334,11 +352,14 @@ func (w *pilotManagedWorker) Prepare(ctx context.Context, p types.DocumentProces
 		if err != nil || info.Status != "COMPLETED" {
 			return nil, ErrManagedWorkerUnavailable
 		}
-		confirmed, err := w.host.Result(callCtx, b, info.CallID, model, "embedding", "embeddings.create")
+		confirmed, receipt, err := w.host.ResultWithEvidence(callCtx, b, info.CallID, model, "embedding", "embeddings.create")
 		if err != nil || !hmac.Equal(result, confirmed) || w.host.Check(callCtx, b) != nil {
 			return nil, ErrManagedWorkerUnavailable
 		}
 		if err := validateManagedEmbeddingResult(confirmed); err != nil {
+			return nil, err
+		}
+		if err := w.saveProducer(callCtx, b, snapshot, expected, confirmed, receipt); err != nil {
 			return nil, err
 		}
 		return confirmed, nil

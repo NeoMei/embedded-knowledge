@@ -115,6 +115,7 @@ func (r *knowledgeRepository) ListKnowledgeProfileRows(
 		Where("tenant_id = ? AND knowledge_base_id = ?", tenantID, kbID).
 		Where("parse_status IN ?", []string{types.ParseStatusCompleted, types.ParseStatusFinalizing}).
 		Where("enable_status = ?", "enabled").
+		Where("(managed_work_id IS NULL OR managed_work_id = '')").
 		Order("created_at ASC").
 		Scan(&rows).Error
 	if err != nil {

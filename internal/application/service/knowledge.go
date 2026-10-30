@@ -598,6 +598,9 @@ func (s *knowledgeService) GetKnowledgeByID(ctx context.Context, id string) (*ty
 		})
 		return nil, err
 	}
+	if knowledge != nil && knowledge.ManagedWorkID != "" {
+		return nil, ErrManagedWorkerUnavailable
+	}
 
 	// Load tags for this knowledge
 	tagMap, err := s.repo.GetKnowledgeTags(ctx, []string{knowledge.ID})
@@ -613,7 +616,11 @@ func (s *knowledgeService) GetKnowledgeByID(ctx context.Context, id string) (*ty
 
 // GetKnowledgeByIDOnly retrieves knowledge by ID without tenant filter (for permission resolution).
 func (s *knowledgeService) GetKnowledgeByIDOnly(ctx context.Context, id string) (*types.Knowledge, error) {
-	return s.repo.GetKnowledgeByIDOnly(ctx, id)
+	knowledge, err := s.repo.GetKnowledgeByIDOnly(ctx, id)
+	if err == nil && knowledge != nil && knowledge.ManagedWorkID != "" {
+		return nil, ErrManagedWorkerUnavailable
+	}
+	return knowledge, err
 }
 
 // GetOwningKBCreatorID walks knowledge_id -> kb_id -> KB.CreatorID for
@@ -651,7 +658,26 @@ func (s *knowledgeService) GetOwningKBCreatorID(ctx context.Context, knowledgeID
 func (s *knowledgeService) ListKnowledgeByKnowledgeBaseID(ctx context.Context,
 	kbID string,
 ) ([]*types.Knowledge, error) {
-	return s.repo.ListKnowledgeByKnowledgeBaseID(ctx, ctx.Value(types.TenantIDContextKey).(uint64), kbID)
+	rows, err := s.repo.ListKnowledgeByKnowledgeBaseID(ctx, ctx.Value(types.TenantIDContextKey).(uint64), kbID)
+	return ordinaryServiceKnowledgeRows(rows), err
+}
+
+// ListKnowledgeForCleanup retains managed ownership evidence for whole-KB
+// mutation refusal. It is never used to build ordinary prompts or listings.
+func (s *knowledgeService) ListKnowledgeForCleanup(ctx context.Context, kbID string) ([]*types.Knowledge, error) {
+	return s.repo.ListKnowledgeByKnowledgeBaseID(ctx, types.MustTenantIDFromContext(ctx), kbID)
+}
+
+// Ordinary content consumers never inherit authority from a managed row's KB.
+// Internal cleanup/provenance checks use the repository's explicit all-row APIs.
+func ordinaryServiceKnowledgeRows(rows []*types.Knowledge) []*types.Knowledge {
+	visible := make([]*types.Knowledge, 0, len(rows))
+	for _, row := range rows {
+		if row != nil && row.ManagedWorkID == "" {
+			visible = append(visible, row)
+		}
+	}
+	return visible
 }
 
 // ListPagedKnowledgeByKnowledgeBaseID returns paginated knowledge entries in a knowledge base
@@ -908,7 +934,8 @@ func (s *knowledgeService) GetKnowledgeBatch(ctx context.Context,
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	return s.repo.GetKnowledgeBatch(ctx, tenantID, ids)
+	rows, err := s.repo.GetKnowledgeBatch(ctx, tenantID, ids)
+	return ordinaryServiceKnowledgeRows(rows), err
 }
 
 // GetKnowledgeBatchWithSharedAccess retrieves knowledge by IDs, including items from shared KBs the user has access to.
@@ -927,7 +954,7 @@ func (s *knowledgeService) GetKnowledgeBatchWithSharedAccess(ctx context.Context
 	ownList := make([]*types.Knowledge, 0, len(rows))
 	foundSet := make(map[string]bool)
 	appendAllowed := func(k *types.Knowledge) {
-		if k == nil || foundSet[k.ID] {
+		if k == nil || k.ManagedWorkID != "" || foundSet[k.ID] {
 			return
 		}
 		allowed, err := permissions.Check(k.KnowledgeBaseID, k.TenantID, types.OrgRoleViewer)

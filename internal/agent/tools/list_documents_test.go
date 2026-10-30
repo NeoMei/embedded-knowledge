@@ -117,6 +117,28 @@ func TestListDocumentsPinnedDocumentsPageAndCountOnlyInScope(t *testing.T) {
 	}
 }
 
+func TestListDocumentsPinnedManagedDocumentIsHidden(t *testing.T) {
+	tool := newListDocumentsFixture()
+	service := tool.knowledgeService.(*readDocKnowledgeService)
+	managed := &types.Knowledge{
+		ID: "managed-doc", KnowledgeBaseID: "kb-1", Title: "private managed title",
+		ParseStatus: "completed", ManagedWorkID: "managed-work",
+	}
+	service.docs[managed.ID] = managed
+	tool.searchTargets = types.SearchTargets{{
+		Type: types.SearchTargetTypeKnowledge, KnowledgeBaseID: "kb-1", TenantID: 7,
+		KnowledgeIDs: []string{managed.ID},
+	}}
+	res, err := tool.Execute(context.Background(), json.RawMessage(`{"knowledge_base_id":"kb-1"}`))
+	if err != nil || !res.Success {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	rows, _ := res.Data["documents"].([]map[string]interface{})
+	if len(rows) != 0 || res.Data["total_docs"] != int64(0) || strings.Contains(res.Output, managed.Title) {
+		t.Fatalf("managed document leaked through explicit pinned listing: rows=%+v data=%+v output=%s", rows, res.Data, res.Output)
+	}
+}
+
 func TestListDocumentsTagScopeIsPushedIntoTheQuery(t *testing.T) {
 	tool := newListDocumentsFixture()
 	service := tool.knowledgeService.(*readDocKnowledgeService)

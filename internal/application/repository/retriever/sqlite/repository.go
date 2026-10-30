@@ -378,36 +378,42 @@ func (r *sqliteRepository) EstimateStorageSize(_ context.Context, indexInfoList 
 }
 
 func (r *sqliteRepository) DeleteByChunkIDList(ctx context.Context, chunkIDList []string, _ int, _ string) error {
-	var rows []sqliteEmbedding
-	if err := r.db.WithContext(ctx).Where("chunk_id IN ?", chunkIDList).Find(&rows).Error; err != nil {
-		return err
-	}
-	if err := r.deleteRowsAndVecs(r.db.WithContext(ctx), rows); err != nil {
-		return err
-	}
-	return r.db.WithContext(ctx).Where("chunk_id IN ?", chunkIDList).Delete(&sqliteEmbedding{}).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var rows []sqliteEmbedding
+		if err := tx.Where("chunk_id IN ?", chunkIDList).Find(&rows).Error; err != nil {
+			return err
+		}
+		if err := r.deleteRowsAndVecs(tx, rows); err != nil {
+			return err
+		}
+		return tx.Where("chunk_id IN ?", chunkIDList).Delete(&sqliteEmbedding{}).Error
+	})
 }
 
 func (r *sqliteRepository) DeleteBySourceIDList(ctx context.Context, sourceIDList []string, _ int, _ string) error {
-	var rows []sqliteEmbedding
-	if err := r.db.WithContext(ctx).Where("source_id IN ?", sourceIDList).Find(&rows).Error; err != nil {
-		return err
-	}
-	if err := r.deleteRowsAndVecs(r.db.WithContext(ctx), rows); err != nil {
-		return err
-	}
-	return r.db.WithContext(ctx).Where("source_id IN ?", sourceIDList).Delete(&sqliteEmbedding{}).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var rows []sqliteEmbedding
+		if err := tx.Where("source_id IN ?", sourceIDList).Find(&rows).Error; err != nil {
+			return err
+		}
+		if err := r.deleteRowsAndVecs(tx, rows); err != nil {
+			return err
+		}
+		return tx.Where("source_id IN ?", sourceIDList).Delete(&sqliteEmbedding{}).Error
+	})
 }
 
 func (r *sqliteRepository) DeleteByKnowledgeIDList(ctx context.Context, knowledgeIDList []string, _ int, _ string) error {
-	var rows []sqliteEmbedding
-	if err := r.db.WithContext(ctx).Where("knowledge_id IN ?", knowledgeIDList).Find(&rows).Error; err != nil {
-		return err
-	}
-	if err := r.deleteRowsAndVecs(r.db.WithContext(ctx), rows); err != nil {
-		return err
-	}
-	return r.db.WithContext(ctx).Where("knowledge_id IN ?", knowledgeIDList).Delete(&sqliteEmbedding{}).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var rows []sqliteEmbedding
+		if err := tx.Where("knowledge_id IN ?", knowledgeIDList).Find(&rows).Error; err != nil {
+			return err
+		}
+		if err := r.deleteRowsAndVecs(tx, rows); err != nil {
+			return err
+		}
+		return tx.Where("knowledge_id IN ?", knowledgeIDList).Delete(&sqliteEmbedding{}).Error
+	})
 }
 
 func (r *sqliteRepository) CopyIndices(ctx context.Context,
@@ -584,6 +590,11 @@ func (r *sqliteRepository) keywordsRetrieve(ctx context.Context, params types.Re
 	`
 
 	args := []interface{}{ftsQuery}
+	ordinaryFilter, err := r.ordinaryKnowledgeFilter(ctx, "e")
+	if err != nil {
+		return nil, err
+	}
+	sql += ordinaryFilter
 
 	for _, wp := range buildFilterWhere(params, "e") {
 		sql += " AND " + wp.clause
@@ -686,6 +697,11 @@ func (r *sqliteRepository) vectorRetrieve(ctx context.Context, params types.Retr
 		queryBlob,
 		params.TopK, // 这里就是 k
 	}
+	ordinaryFilter, err := r.ordinaryKnowledgeFilter(ctx, "filtered")
+	if err != nil {
+		return nil, err
+	}
+	vecSQL += ordinaryFilter
 
 	// 追加过滤条件
 	for _, wp := range buildFilterWhere(params, "filtered") {
@@ -788,6 +804,9 @@ func (r *sqliteRepository) insertVec(db *gorm.DB, rowID uint, dim int, emb []flo
 	if rowID == 0 {
 		return errors.New("[SQLite] cannot insert a vector row without a row id")
 	}
+	if err := invalidateManagedVector(db, rowID); err != nil {
+		return err
+	}
 	blob, err := sqlite_vec.SerializeFloat32(emb)
 	if err != nil {
 		return fmt.Errorf("[SQLite] failed to serialize embedding of row %d: %w", rowID, err)
@@ -817,6 +836,9 @@ func (r *sqliteRepository) deleteRowsAndVecs(db *gorm.DB, rows []sqliteEmbedding
 		}
 		tbl := vecTableName(dim)
 		for _, id := range ids {
+			if err := invalidateManagedVector(db, id); err != nil {
+				return err
+			}
 			if err := db.Exec(fmt.Sprintf("DELETE FROM %s WHERE rowid = ?", tbl), id).Error; err != nil {
 				return fmt.Errorf("[SQLite] failed to delete vector row %d from %s: %w", id, tbl, err)
 			}
@@ -899,6 +921,20 @@ func buildFilterWhere(params types.RetrieveParams, tableAlias string) []whereCla
 		})
 	}
 	return parts
+}
+
+// Ordinary recall excludes managed documents in SQL, before K/limit, logs or
+// trace sinks. Managed retrieval uses the dedicated completion transaction.
+// Standalone native index databases have no knowledge ownership column.
+func (r *sqliteRepository) ordinaryKnowledgeFilter(ctx context.Context, alias string) (string, error) {
+	var columns int64
+	if err := r.db.WithContext(ctx).Raw("SELECT count(*) FROM pragma_table_info('knowledges') WHERE name='managed_work_id'").Scan(&columns).Error; err != nil {
+		return "", err
+	}
+	if columns == 0 {
+		return "", nil
+	}
+	return " AND NOT EXISTS (SELECT 1 FROM knowledges managed WHERE managed.id = " + alias + ".knowledge_id AND COALESCE(managed.managed_work_id, '') <> '')", nil
 }
 
 func placeholders(n int) string {
@@ -1000,4 +1036,17 @@ func sanitizeFTS5Query(q string) string {
 	// source, chunk, knowledge and KB IDs, so a query for "2023" could match
 	// a UUID fragment.
 	return "content : (" + strings.Join(parts, " OR ") + ")"
+}
+
+// Called only with the caller's transaction; ordinary installations need no
+// managed tables. Managed completion is invalidated before changing vec0.
+func invalidateManagedVector(tx *gorm.DB, rowID uint) error {
+	var count int64
+	if err := tx.Raw("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='managed_index_completions'").Scan(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return nil
+	}
+	return tx.Exec("UPDATE managed_index_completions SET invalid=1, revision=revision+1 WHERE invalid=0 AND knowledge_id IN (SELECT knowledge_id FROM lite_embeddings WHERE id=?)", rowID).Error
 }

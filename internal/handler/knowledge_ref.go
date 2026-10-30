@@ -10,6 +10,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/application/service"
 	"github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/managedcapability"
 	"github.com/Tencent/WeKnora/internal/types"
 	secutils "github.com/Tencent/WeKnora/internal/utils"
 	"github.com/gin-gonic/gin"
@@ -86,6 +87,34 @@ type managedReferenceService interface {
 	AuthorizeManagedReference(context.Context, uint64, string, string, string, []byte, string, string) error
 }
 
+func decodeManagedReferenceRequest(raw []byte) (managedReferenceRequest, error) {
+	var req managedReferenceRequest
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if managedcapability.StrictJSON(raw, &req) != nil || decoder.Decode(&req) != nil || req.Path == "" || req.Capability == "" || len(req.Capability) > 16384 {
+		return managedReferenceRequest{}, errors.NewBadRequestError("Invalid request parameters")
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return managedReferenceRequest{}, errors.NewBadRequestError("Invalid request parameters")
+	}
+	return req, nil
+}
+
+func decodeManagedCapabilityRequest(raw []byte) (string, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var req struct {
+		Capability string `json:"capability"`
+	}
+	if managedcapability.StrictJSON(raw, &req) != nil || decoder.Decode(&req) != nil || req.Capability == "" || len(req.Capability) > 16384 {
+		return "", errors.NewBadRequestError("Invalid request parameters")
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return "", errors.NewBadRequestError("Invalid request parameters")
+	}
+	return req.Capability, nil
+}
+
 // CreateManagedKnowledgeFromRef accepts no actor or payer from the caller.
 // The service independently verifies the signed work and live host authority.
 func (h *KnowledgeHandler) CreateManagedKnowledgeFromRef(c *gin.Context) {
@@ -108,15 +137,9 @@ func (h *KnowledgeHandler) CreateManagedKnowledgeFromRef(c *gin.Context) {
 		c.Error(errors.NewBadRequestError("Invalid request parameters"))
 		return
 	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	var req managedReferenceRequest
-	if decoder.Decode(&req) != nil || req.Path == "" || req.Capability == "" || len(req.Capability) > 16384 {
-		c.Error(errors.NewBadRequestError("Invalid request parameters"))
-		return
-	}
-	if _, err = decoder.Token(); err != io.EOF {
-		c.Error(errors.NewBadRequestError("Invalid request parameters"))
+	req, err := decodeManagedReferenceRequest(raw)
+	if err != nil {
+		c.Error(err)
 		return
 	}
 	ctx := types.WithExecutionTenant(c.Request.Context(), tenantID)
@@ -156,17 +179,9 @@ func (h *KnowledgeHandler) ManagedKnowledgeStatus(c *gin.Context) {
 		c.Error(errors.NewBadRequestError("Invalid request parameters"))
 		return
 	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	var request struct {
-		Capability string `json:"capability"`
-	}
-	if decoder.Decode(&request) != nil || request.Capability == "" || len(request.Capability) > 16384 {
-		c.Error(errors.NewBadRequestError("Invalid request parameters"))
-		return
-	}
-	if _, err = decoder.Token(); err != io.EOF {
-		c.Error(errors.NewBadRequestError("Invalid request parameters"))
+	capability, err := decodeManagedCapabilityRequest(raw)
+	if err != nil {
+		c.Error(err)
 		return
 	}
 	proof := c.Request.Header.Values("X-WeKnora-Managed-Proof")
@@ -175,7 +190,7 @@ func (h *KnowledgeHandler) ManagedKnowledgeStatus(c *gin.Context) {
 		return
 	}
 	ctx := types.WithExecutionTenant(c.Request.Context(), tenant)
-	result, err := svc.ManagedKnowledgeStatus(ctx, tenant, kbID, c.Request.Method, c.Request.URL.Path, raw, request.Capability, proof[0])
+	result, err := svc.ManagedKnowledgeStatus(ctx, tenant, kbID, c.Request.Method, c.Request.URL.Path, raw, capability, proof[0])
 	if err != nil || result == nil {
 		c.Error(errors.NewForbiddenError("Managed knowledge unavailable"))
 		return

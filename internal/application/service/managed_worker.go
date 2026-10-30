@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/Tencent/WeKnora/internal/managedcapability"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -59,8 +60,11 @@ func (s *knowledgeService) AuthorizeManagedReference(ctx context.Context, tenant
 
 // ManagedStatus contains no source path, capability or document content.
 type ManagedStatus struct {
-	ID          string `json:"id"`
-	ParseStatus string `json:"parse_status"`
+	Discovery   *ManagedDiscoveryReply  `json:"discovery,omitempty"`
+	Completion  *ManagedCompletionReply `json:"completion,omitempty"`
+	Storage     *ManagedStorageReply    `json:"storage,omitempty"`
+	ID          string                  `json:"id"`
+	ParseStatus string                  `json:"parse_status"`
 }
 
 // ManagedKnowledgeStatus checks a one-use request proof and current source
@@ -69,6 +73,15 @@ func (s *knowledgeService) ManagedKnowledgeStatus(ctx context.Context, tenant ui
 	w, ok := s.managedWorker.(*pilotManagedWorker)
 	if !ok || w == nil || s.repo == nil {
 		return nil, ErrManagedWorkerUnavailable
+	}
+	if strings.HasPrefix(capability, "completed-index-discover-v1.") {
+		return w.discoveryStatus(ctx, tenant, kb, method, path, body, capability, proof)
+	}
+	if strings.HasPrefix(capability, "completed-index-use-v1.") {
+		return w.completedStatus(ctx, tenant, kb, method, path, body, capability, proof)
+	}
+	if strings.HasPrefix(capability, "managed-storage-v1.") {
+		return w.storageStatus(ctx, tenant, kb, method, path, body, capability, proof)
 	}
 	claims, err := w.verifier.DecodeVerified(capability)
 	if err != nil || claims.TenantID != tenant || claims.KnowledgeBaseID != kb {
@@ -89,6 +102,9 @@ func (s *knowledgeService) ManagedKnowledgeStatus(ctx context.Context, tenant ui
 		return nil, ErrManagedWorkerUnavailable
 	}
 	if _, err := w.verifier.Verify(capability, bound); err != nil {
+		return nil, ErrManagedWorkerUnavailable
+	}
+	if knowledge.ParseStatus == types.ParseStatusCompleted {
 		return nil, ErrManagedWorkerUnavailable
 	}
 	return &ManagedStatus{ID: knowledge.ID, ParseStatus: knowledge.ParseStatus}, nil

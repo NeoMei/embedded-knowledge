@@ -11,13 +11,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type managedPostCompletionKB struct {
+	*wikiEnqueueFailureKBService
+	knowledge *types.Knowledge
+}
+
+func (s *managedPostCompletionKB) CompleteManagedIndex(context.Context, string) error {
+	s.knowledge.ParseStatus = types.ParseStatusCompleted
+	s.knowledge.SummaryStatus = types.SummaryStatusNone
+	return nil
+}
 func TestManagedPostProcessSkipsAllUnapprovedEnrichment(t *testing.T) {
 	t.Setenv("NEO4J_ENABLE", "true")
 	knowledge := &types.Knowledge{ID: "doc", TenantID: 7, KnowledgeBaseID: "kb", ManagedWorkID: "work", ParseStatus: types.ParseStatusProcessing}
 	repo := &optionalSummaryKnowledgeRepo{wikiEnqueueFailureKnowledgeRepo: wikiEnqueueFailureKnowledgeRepo{knowledge: knowledge}}
 	queue := &wikiEnqueueFailureTaskQueue{}
 	kb := &types.KnowledgeBase{ID: "kb", TenantID: 7, Type: types.KnowledgeBaseTypeDocument, IndexingStrategy: types.IndexingStrategy{VectorEnabled: true, GraphEnabled: true, WikiEnabled: true}, QuestionGenerationConfig: &types.QuestionGenerationConfig{Enabled: true}, ExtractConfig: &types.ExtractConfig{Enabled: true}, AutoTagConfig: &types.AutoTagConfig{Enabled: true}}
-	svc := &KnowledgePostProcessService{knowledgeRepo: repo, kbService: &wikiEnqueueFailureKBService{kb: kb}, chunkRepo: &wikiEnqueueFailureChunkRepo{chunks: []*types.Chunk{{ID: "chunk", TenantID: 7, KnowledgeID: "doc", KnowledgeBaseID: "kb", ChunkType: types.ChunkTypeText, Content: "private document"}}}, taskEnqueuer: queue, pendingRepo: &wikiEnqueueFailurePendingRepo{knowledgeRepo: &repo.wikiEnqueueFailureKnowledgeRepo}}
+	svc := &KnowledgePostProcessService{knowledgeRepo: repo, kbService: &managedPostCompletionKB{wikiEnqueueFailureKBService: &wikiEnqueueFailureKBService{kb: kb}, knowledge: knowledge}, chunkRepo: &wikiEnqueueFailureChunkRepo{chunks: []*types.Chunk{{ID: "chunk", TenantID: 7, KnowledgeID: "doc", KnowledgeBaseID: "kb", ChunkType: types.ChunkTypeText, Content: "private document"}}}, taskEnqueuer: queue, pendingRepo: &wikiEnqueueFailurePendingRepo{knowledgeRepo: &repo.wikiEnqueueFailureKnowledgeRepo}}
 	body, err := json.Marshal(types.KnowledgePostProcessPayload{TenantID: 7, KnowledgeID: "doc", KnowledgeBaseID: "kb"})
 	require.NoError(t, err)
 	task := asynq.NewTask(types.TypeKnowledgePostProcess, body)
