@@ -12,6 +12,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Tencent/WeKnora/internal/managedcapability"
 	"github.com/Tencent/WeKnora/internal/managedjournal"
@@ -218,6 +219,34 @@ func (s *knowledgeBaseService) ManagedHybridSearch(ctx context.Context, kbID, ca
 			}
 			return w.host.SearchDispatch(c, b, callID, operation, body)
 		})
+		if errors.Is(err, managedjournal.ErrExpired) {
+			// Expiry removes only the local payload, not the original paid call.
+			// Revalidate current authority and accept only a signed SETTLED read;
+			// this path cannot use absence proofs or invoke SearchDispatch.
+			info, inspectErr := w.journal.Inspect(callCtx, scope, body)
+			if inspectErr != nil || info.Status != "EXPIRED" {
+				return nil, ErrManagedWorkerUnavailable
+			}
+			out, err = w.journal.RecoverExpired(callCtx, scope, body, time.Unix(claims.ExpiresAt, 0), func(c context.Context, callID string) ([]byte, error) {
+				if callID != info.CallID || w.host.SearchCheck(c, b) != nil {
+					return nil, ErrManagedWorkerUnavailable
+				}
+				if _, verifyErr := w.verifier.VerifySearch(capability, b); verifyErr != nil {
+					return nil, ErrManagedWorkerUnavailable
+				}
+				result, readErr := w.host.SearchResult(c, b, callID, operation)
+				if readErr != nil || w.host.SearchCheck(c, b) != nil {
+					return nil, ErrManagedWorkerUnavailable
+				}
+				if _, verifyErr := w.verifier.VerifySearch(capability, b); verifyErr != nil {
+					return nil, ErrManagedWorkerUnavailable
+				}
+				return result, nil
+			})
+			if err != nil {
+				return nil, err
+			}
+		}
 		if errors.Is(err, managedjournal.ErrUnresolved) {
 			var absentCall string
 			readResult := func(c context.Context, callID string) ([]byte, error) {

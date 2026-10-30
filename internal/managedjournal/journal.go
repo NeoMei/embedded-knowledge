@@ -611,6 +611,20 @@ func (j *Journal) Inspect(ctx context.Context, s Scope, input []byte) (Info, err
 // read-only settled-result lookup. The callback must never submit a provider
 // request. Races with a live writer are resolved by state-MAC CAS.
 func (j *Journal) Recover(ctx context.Context, s Scope, input []byte, read func(context.Context, string) ([]byte, error)) ([]byte, error) {
+	return j.recoverResult(ctx, s, input, "DISPATCHED", time.Time{}, read)
+}
+
+// RecoverExpired restores only the retained result of an authenticated expired
+// call. The caller must verify a current signed SETTLED result; read must never
+// submit a provider request. Generic Recover remains DISPATCHED-only.
+func (j *Journal) RecoverExpired(ctx context.Context, s Scope, input []byte, notAfter time.Time, read func(context.Context, string) ([]byte, error)) ([]byte, error) {
+	if j == nil || !notAfter.After(j.now()) {
+		return nil, ErrExpired
+	}
+	return j.recoverResult(ctx, s, input, "EXPIRED", notAfter, read)
+}
+
+func (j *Journal) recoverResult(ctx context.Context, s Scope, input []byte, status string, notAfter time.Time, read func(context.Context, string) ([]byte, error)) ([]byte, error) {
 	if j == nil || ctx == nil || read == nil {
 		return nil, ErrInvalid
 	}
@@ -618,8 +632,15 @@ func (j *Journal) Recover(ctx context.Context, s Scope, input []byte, read func(
 	if err != nil {
 		return nil, err
 	}
-	if info.Status != "DISPATCHED" {
+	if info.Status != status {
 		return nil, ErrUnresolved
+	}
+	var initial record
+	if status == "EXPIRED" {
+		keyBytes, _ := json.Marshal([]any{s.LogicalID, s.Operation, s.Batch})
+		if err = j.db.WithContext(ctx).First(&initial, "request_key = ?", digest(keyBytes)).Error; err != nil || initial.CallID != info.CallID || initial.Status != status || !j.validState(initial) {
+			return nil, ErrUnresolved
+		}
 	}
 	result, err := read(ctx, info.CallID)
 	if err != nil || len(result) == 0 || len(result) > maxResult || ctx.Err() != nil {
@@ -632,7 +653,7 @@ func (j *Journal) Recover(ctx context.Context, s Scope, input []byte, read func(
 	keyBytes, _ := json.Marshal([]any{s.LogicalID, s.Operation, s.Batch})
 	key := digest(keyBytes)
 	var current record
-	if err = j.db.WithContext(ctx).First(&current, "request_key = ?", key).Error; err != nil || current.CallID != info.CallID || current.Status != "DISPATCHED" || !j.validState(current) {
+	if err = j.db.WithContext(ctx).First(&current, "request_key = ?", key).Error; err != nil || current.CallID != info.CallID || current.Status != status || !j.validState(current) || (status == "EXPIRED" && current.StateMAC != initial.StateMAC) {
 		return nil, ErrUnresolved
 	}
 	opBytes, _ := json.Marshal([]string{s.LogicalID, s.Operation})
@@ -650,6 +671,12 @@ func (j *Journal) Recover(ctx context.Context, s Scope, input []byte, read func(
 	}
 	original := current
 	current.ExpiresAt = j.now().Add(j.retention).UnixMilli()
+	if status == "EXPIRED" {
+		if !notAfter.After(j.now()) {
+			return nil, ErrExpired
+		}
+		current.ExpiresAt = min(current.ExpiresAt, notAfter.UnixMilli())
+	}
 	nonce := make([]byte, j.aead.NonceSize())
 	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, ErrUnresolved
@@ -664,7 +691,10 @@ func (j *Journal) Recover(ctx context.Context, s Scope, input []byte, read func(
 	defer cancel()
 	ownerMatch := j.db.Model(&logicalOwner{}).Select("1").Where(map[string]any{"owner_key": owner.OwnerKey, "logical_id": owner.LogicalID, "tenant_id": owner.TenantID, "actor_id": owner.ActorID, "account_id": owner.AccountID, "task_id": owner.TaskID, "binding_mac": owner.BindingMAC})
 	opMatch := j.db.Model(&logicalOperation{}).Select("1").Where(map[string]any{"operation_key": operation.Key, "model": operation.Model, "plan_digest": operation.PlanDigest, "binding_mac": operation.BindingMAC})
-	match := map[string]any{"request_key": original.Key, "call_id": original.CallID, "tenant_id": original.TenantID, "actor_id": original.ActorID, "account_id": original.AccountID, "task_id": original.TaskID, "logical_id": original.LogicalID, "operation": original.Operation, "model": original.Model, "batch": original.Batch, "input_digest": original.InputDigest, "binding_mac": original.BindingMAC, "state_mac": previousState, "status": "DISPATCHED"}
+	match := map[string]any{"request_key": original.Key, "call_id": original.CallID, "tenant_id": original.TenantID, "actor_id": original.ActorID, "account_id": original.AccountID, "task_id": original.TaskID, "logical_id": original.LogicalID, "operation": original.Operation, "model": original.Model, "batch": original.Batch, "input_digest": original.InputDigest, "binding_mac": original.BindingMAC, "state_mac": previousState, "status": status}
+	if status == "EXPIRED" {
+		match["expires_at"], match["result_hash"] = original.ExpiresAt, original.ResultHash
+	}
 	update := j.db.WithContext(saveCtx).Model(&record{})
 	if j.db.Dialector.Name() == "mysql" {
 		for column, value := range match {
