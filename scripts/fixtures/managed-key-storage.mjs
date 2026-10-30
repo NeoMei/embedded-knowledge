@@ -163,8 +163,10 @@ try {
     }
     return [Text.UTF8Encoding]::new($false, $true).GetString($bytes.ToArray())
   }
-  $source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((ReadBoundedLine 40000)))
-  $inputValue = (ReadBoundedLine 32768) | ConvertFrom-Json
+  $sourceLine = ReadBoundedLine 40000
+  $source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($sourceLine))
+  $metadataLine = ReadBoundedLine 32768
+  $inputValue = ConvertFrom-Json -InputObject $metadataLine
   if (@($inputValue.PSObject.Properties.Name).Count -ne 2 -or
       $inputValue.operation -notin @('directory', 'create-file', 'verify-file')) { throw 'invalid' }
   $target = [string]$inputValue.path

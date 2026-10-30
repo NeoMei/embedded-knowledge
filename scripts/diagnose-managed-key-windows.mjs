@@ -11,7 +11,7 @@ if (process.platform !== 'win32') throw new Error('native Windows is required');
 const started = performance.now();
 const events = [];
 const record = (stage) => events.push({ stage, elapsed_ms: Math.round(performance.now() - started) });
-const allowed = new Set(['boot', 'stdin_open', 'source_read', 'metadata_read', 'path_valid', 'compile_start', 'compile_done', 'run_done', 'caught', 'IOException', 'UnauthorizedAccessException', 'Win32Exception', 'TypeLoadException', 'ArgumentException', 'NullReferenceException', 'InvalidOperationException', 'RuntimeException', 'MethodInvocationException']);
+const allowed = new Set(['boot', 'stdin_open', 'source_line', 'source_read', 'metadata_line', 'metadata_read', 'path_valid', 'compile_start', 'compile_done', 'run_done', 'caught', 'IOException', 'UnauthorizedAccessException', 'Win32Exception', 'TypeLoadException', 'ArgumentException', 'NullReferenceException', 'InvalidOperationException', 'RuntimeException', 'MethodInvocationException']);
 const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'managed-normal-diagnostic-'));
 let success = false;
 const storage = createManagedKeyStorage({
@@ -21,7 +21,9 @@ const storage = createManagedKeyStorage({
     const replacements = [
       ["try {\n  $stdin", `try {\n  ${marker('boot')}\n  $stdin`],
       ["  function ReadBoundedLine", `  ${marker('stdin_open')}\n  function ReadBoundedLine`],
-      ["  $inputValue =", `  ${marker('source_read')}\n  $inputValue =`],
+      ["  $source =", `  ${marker('source_line')}\n  $source =`],
+      ["  $metadataLine =", `  ${marker('source_read')}\n  $metadataLine =`],
+      ["  $inputValue =", `  ${marker('metadata_line')}\n  $inputValue =`],
       ["  if (@($inputValue", `  ${marker('metadata_read')}\n  if (@($inputValue`],
       ["  Add-Type -TypeDefinition", `  ${marker('path_valid')}\n  ${marker('compile_start')}\n  Add-Type -TypeDefinition`],
       ["  [ManagedPrivateStorage]::Run", `  ${marker('compile_done')}\n  [ManagedPrivateStorage]::Run`],
