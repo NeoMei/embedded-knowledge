@@ -41,6 +41,7 @@ jobs:
         shell: pwsh
         run: ./scripts/test-managed-key-windows.ps1
       - name: Normal host creation and strict read as a standard user
+        if: always()
         shell: pwsh
         run: ./scripts/test-managed-key-standard-user-windows.ps1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

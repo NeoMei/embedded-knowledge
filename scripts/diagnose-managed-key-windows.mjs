@@ -11,9 +11,10 @@ if (process.platform !== 'win32') throw new Error('native Windows is required');
 const started = performance.now();
 const events = [];
 const record = (stage) => events.push({ stage, elapsed_ms: Math.round(performance.now() - started) });
-const allowed = new Set(['boot', 'stdin_open', 'compiler_temp_start', 'compiler_temp_ready', 'source_line', 'source_read', 'metadata_line', 'module_start', 'module_ready', 'metadata_read', 'path_valid', 'compile_start', 'compile_done', 'run_done', 'caught', 'IOException', 'UnauthorizedAccessException', 'Win32Exception', 'TypeLoadException', 'ArgumentException', 'SecurityException', 'FileNotFoundException', 'TypeInitializationException', 'NullReferenceException', 'InvalidOperationException', 'RuntimeException', 'MethodInvocationException']);
+const allowed = new Set(['boot', 'stdin_open', 'compiler_temp_start', 'compiler_temp_ready', 'source_line', 'source_read', 'metadata_line', 'module_start', 'module_ready', 'metadata_read', 'path_valid', 'compile_start', 'compile_done', 'run_done', 'caught', 'IOException', 'UnauthorizedAccessException', 'Win32Exception', 'TypeLoadException', 'ArgumentException', 'SecurityException', 'FileNotFoundException', 'TypeInitializationException', 'NullReferenceException', 'InvalidOperationException', 'RuntimeException', 'MethodInvocationException', 'MethodException', 'PropertyNotFoundException', 'ParameterBindingException', 'InvalidCastException', 'ArgumentNullException']);
 const fixedReasons = ['invalid', 'compiler_temp', 'kind', 'security', 'owner or acl', 'acl kind', 'acl grant', 'private grant', 'ancestor grant', 'root', 'directory', 'key length', 'changed file', 'changed parent', 'create file', 'existing file'];
 for (const reason of fixedReasons) allowed.add('reason_' + reason.replaceAll(' ', '_'));
+for (const stage of ['temp_lexical_start', 'temp_lexical_done', 'temp_full_done', 'temp_drive_done', 'temp_ancestor_start', 'temp_attributes_done', 'temp_acl_done', 'temp_sd_done', 'temp_owner_done', 'temp_probe_start', 'temp_probe_done']) allowed.add(stage);
 const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'managed-normal-diagnostic-'));
 let success = false;
 const storage = createManagedKeyStorage({
@@ -21,6 +22,16 @@ const storage = createManagedKeyStorage({
     let script = Buffer.from(args.at(-1), 'base64').toString('utf16le');
     const marker = (stage) => `[Console]::Error.WriteLine('UH_PHASE_${stage}')`;
     const replacements = [
+      ["    foreach ($part in $value.Substring(3).Split('\\'))", `    ${marker('temp_lexical_start')}\n    foreach ($part in $value.Substring(3).Split('\\'))`],
+      ["    $value = [IO.Path]::GetFullPath($value)", `    ${marker('temp_lexical_done')}\n    $value = [IO.Path]::GetFullPath($value)\n    ${marker('temp_full_done')}`],
+      ["    $user = [Security.Principal.WindowsIdentity]", `    ${marker('temp_drive_done')}\n    $user = [Security.Principal.WindowsIdentity]`],
+      ["      $attributes = [IO.File]", `      ${marker('temp_ancestor_start')}\n      $attributes = [IO.File]`],
+      ["      $security = [IO.Directory]", `      ${marker('temp_attributes_done')}\n      $security = [IO.Directory]`],
+      ["      $raw = [Security.AccessControl.RawSecurityDescriptor]", `      ${marker('temp_acl_done')}\n      $raw = [Security.AccessControl.RawSecurityDescriptor]`],
+      ["      $target = $directory -ceq $value", `      ${marker('temp_sd_done')}\n      $target = $directory -ceq $value`],
+      ["      foreach ($ace in $raw.DiscretionaryAcl)", `      ${marker('temp_owner_done')}\n      foreach ($ace in $raw.DiscretionaryAcl)`],
+      ["    $probe = [IO.FileStream]", `    ${marker('temp_probe_start')}\n    $probe = [IO.FileStream]`],
+      ["    $probe.Dispose()", `    $probe.Dispose()\n    ${marker('temp_probe_done')}`],
       ["try {\n  $stdin", `try {\n  ${marker('boot')}\n  $stdin`],
       ["  function ReadBoundedLine", `  ${marker('stdin_open')}\n  function ReadBoundedLine`],
       ["  AssertCompilerTemporary $env:TEMP", `  ${marker('compiler_temp_start')}\n  AssertCompilerTemporary $env:TEMP\n  ${marker('compiler_temp_ready')}`],
