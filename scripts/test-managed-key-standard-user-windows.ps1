@@ -71,8 +71,24 @@ if ($identity.User.Value -ne $settings.expected_sid) { throw 'The synthetic stan
 [Console]::Out.WriteLine('STANDARD_NONADMIN=true')
 $env:PATH = [IO.Path]::GetDirectoryName($settings.node) + ';' + $env:SystemRoot + '\System32;' + $env:SystemRoot
 $env:WEKNORA_TEST_MANAGED_HOST_MODULE = $settings.helper
-& $settings.binary '-test.run' '^(TestManagedWindowsActualUserConfigHostLayout|TestManagedWindowsProductionHostPreparesEveryKeyKind|TestManagedWindowsProductionHostDirectoryOwnership|TestManagedWindowsProductionHostHoldsVerifiedEmptyFile|TestManagedWindowsHostLayoutInheritedPermissions|TestManagedWindowsKeyFileReadsPrivateOwnerKey)$' '-test.v' '-test.count=1'
-exit $LASTEXITCODE
+$testStart = [Diagnostics.ProcessStartInfo]::new()
+$testStart.FileName = $settings.binary
+$testStart.Arguments = '-test.run "^(TestManagedWindowsActualUserConfigHostLayout|TestManagedWindowsProductionHostPreparesEveryKeyKind|TestManagedWindowsProductionHostDirectoryOwnership|TestManagedWindowsProductionHostHoldsVerifiedEmptyFile|TestManagedWindowsHostLayoutInheritedPermissions|TestManagedWindowsKeyFileReadsPrivateOwnerKey)$" -test.v -test.count=1'
+$testStart.UseShellExecute = $false
+$testStart.CreateNoWindow = $true
+$testStart.RedirectStandardOutput = $true
+$testStart.RedirectStandardError = $true
+$testStart.WorkingDirectory = $env:TEMP
+$testProcess = [Diagnostics.Process]::Start($testStart)
+try {
+  $stdout = $testProcess.StandardOutput.ReadToEndAsync()
+  $stderr = $testProcess.StandardError.ReadToEndAsync()
+  if (!$testProcess.WaitForExit(180000)) { $testProcess.Kill(); throw 'Standard-user test process timed out' }
+  [Console]::Out.Write($stdout.GetAwaiter().GetResult())
+  [Console]::Error.Write($stderr.GetAwaiter().GetResult())
+  [Console]::Out.WriteLine('STANDARD_TEST_EXIT=' + $testProcess.ExitCode)
+  exit $testProcess.ExitCode
+} finally { $testProcess.Dispose() }
 '@
   $driverPath = Join-Path $root 'standard-driver.ps1'
   [IO.File]::WriteAllText($driverPath, $driver, $utf8)
