@@ -1,0 +1,34 @@
+# Native Windows key-reader proof; no provider or financial operations.
+name: Managed Windows key reader
+on:
+  push:
+    branches: [codex/unified-knowledge-runtime]
+    paths:
+      - internal/application/service/managed_key_file_*.go
+      - scripts/test-managed-key-windows.ps1
+      - .github/workflows/managed-windows-key.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  key-reader:
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: 1.26.10
+          cache: false
+      - name: Native baseline RED and current reader GREEN
+        id: native
+        shell: pwsh
+        run: ./scripts/test-managed-key-windows.ps1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: managed-windows-key-evidence
+          path: ${{ runner.temp }}/managed-key-native-*
+          if-no-files-found: error
