@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -61,6 +62,85 @@ func managedWindowsTestKey(t *testing.T) (string, string, []byte) {
 	}
 	managedWindowsTestACL(t, file, "")
 	return dir, file, key
+}
+
+func managedWindowsHostCommand(t *testing.T, filename, mode string) error {
+	t.Helper()
+	helper := os.Getenv("WEKNORA_TEST_MANAGED_HOST_MODULE")
+	if helper == "" {
+		helper = filepath.Join("..", "..", "..", "scripts", "fixtures", "managed-key-storage.mjs")
+	}
+	absolute, err := filepath.Abs(helper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Stat(absolute); err != nil {
+		t.Fatalf("byte-identical production host helper is required: %v", err)
+	}
+	const script = `const {pathToFileURL}=require('node:url'); const fs=require('node:fs/promises'); const path=require('node:path');
+import(pathToFileURL(process.argv[1]).href).then(async ({createManagedKeyStorage})=>{
+  const storage=createManagedKeyStorage(); const filename=process.argv[2];
+  if(process.argv[3]==='verify'){ await storage.verifyFile(filename); return; }
+  if(process.argv[3]==='directory-concurrent'){
+    const results=await Promise.all([storage.prepareDirectory(filename),storage.prepareDirectory(filename)]);
+    if(results.filter(value=>value===true).length!==1 || results.filter(value=>value===false).length!==1) throw new Error('exclusive directory creation violated');
+    return;
+  }
+  if(process.argv[3].startsWith('directory-')){
+    const created=await storage.prepareDirectory(filename);
+    if(created!==(process.argv[3]==='directory-new')) throw new Error('unexpected directory ownership');
+    return;
+  }
+  await storage.prepareDirectory(path.dirname(filename));
+  const file=await storage.createFile(filename);
+  try { await file.writeFile(Buffer.alloc(32,104)); await file.sync(); } finally { await file.close(); }
+  await storage.verifyFile(filename);
+}).catch(()=>{console.error('production_host_key_refused'); process.exitCode=1;});`
+	command := exec.Command("node", "-e", script, absolute, filename, mode)
+	output, err := command.CombinedOutput()
+	if err != nil && !bytes.Contains(output, []byte("production_host_key_refused")) {
+		t.Fatalf("host helper did not reach its storage boundary: %s", output)
+	}
+	return err
+}
+
+func managedWindowsVerifyRawAndPreparedHostLayout(t *testing.T, rawFile, newFile string, rawKey []byte) {
+	t.Helper()
+	before, err := windows.GetNamedSecurityInfo(rawFile, windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, readErr := readManagedKeyFile(rawFile)
+	if readErr != nil {
+		// Normal mkdir/write permissions are not an ACL guarantee. Keep the
+		// actual legacy refusal, and prove creation does not repair old data.
+		t.Logf("raw inherited host layout refused; owner/ACL: %s", before.String())
+		if managedWindowsHostCommand(t, rawFile, "create") == nil {
+			t.Fatal("unsafe pre-existing secret was repaired or overwritten")
+		}
+	} else if !bytes.Equal(raw, rawKey) {
+		t.Fatal("raw private host bytes changed")
+	}
+	after, err := windows.GetNamedSecurityInfo(rawFile, windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	if err != nil || before.String() != after.String() {
+		t.Fatal("raw existing key security metadata changed")
+	}
+	if existing, err := os.ReadFile(rawFile); err != nil || !bytes.Equal(existing, rawKey) {
+		t.Fatal("raw existing key contents changed")
+	}
+	if err := managedWindowsHostCommand(t, newFile, "create"); err != nil {
+		t.Fatalf("production host cannot prepare a private key: %v", err)
+	}
+	want := bytes.Repeat([]byte{'h'}, 32)
+	got, err := readManagedKeyFile(newFile)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("strict reader rejected production-prepared key: %v", err)
+	}
+	if err := managedWindowsHostCommand(t, newFile, "verify"); err != nil {
+		t.Fatalf("production host cannot re-read its own key: %v", err)
+	}
 }
 
 func TestManagedWindowsKeyFileReadsPrivateOwnerKey(t *testing.T) {
@@ -178,8 +258,6 @@ func TestManagedWindowsHostLayoutInheritedPermissions(t *testing.T) {
 	if err := os.WriteFile(file, key, 0600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := readManagedKeyFile(file)
-	if err != nil || !bytes.Equal(got, key) {
-		t.Fatalf("OS-inherited private host layout rejected: %v", err)
-	}
+	prepared := filepath.Join(appData, "production-private", "callback.key")
+	managedWindowsVerifyRawAndPreparedHostLayout(t, file, prepared, key)
 }

@@ -17,6 +17,13 @@ foreach ($name in $inputs) {
 $goVersion = (& go version | Out-String).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Go unavailable' }
 $results.go_version = $goVersion
+$hostSource = Join-Path $source 'scripts/fixtures/managed-key-storage.mjs'
+$hostSHA = (Get-FileHash -LiteralPath $hostSource -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($hostSHA -ne '90f0a2b2a1cc43dde0546c1504c53a5ec6a3ea34c7b4200eb9bf3f0c8cbbb831') { throw 'Reviewed production host helper SHA differs' }
+$results.production_host_helper_sha256 = $hostSHA
+$env:WEKNORA_TEST_MANAGED_HOST_MODULE = $hostSource
+$results.node_version = (& node --version | Out-String).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Native Node unavailable for production host proof' }
 $goMod = "module managed-key-windows-native-harness`n`ngo 1.26.0`n`nrequire golang.org/x/sys v0.46.0`n"
 $sum = ((Get-Content -LiteralPath (Join-Path $source 'go.sum') | Where-Object { $_ -match '^golang.org/x/sys v0\.46\.0(?:/go.mod)? ' }) -join "`n") + "`n"
 if (($sum.Trim() -split "`n").Length -ne 2) { throw 'Exact existing x/sys checksums required' }
@@ -41,6 +48,15 @@ foreach ($kind in @('baseline', 'current')) {
     }
   }
 }
+$hostOld = Join-Path $root 'host-before.mjs'
+$hostOldCode = @'
+import fs from 'node:fs/promises'; import path from 'node:path';
+export function createManagedKeyStorage(){ return {
+ async prepareDirectory(p){await fs.mkdir(p,{recursive:true,mode:0o700});},
+ async createFile(p){return fs.open(p,'wx',0o600);}, async verifyFile(){}
+}; }
+'@
+[System.IO.File]::WriteAllText($hostOld, $hostOldCode, $utf8)
 $env:GOTOOLCHAIN = 'local'
 $env:GOOS = 'windows'
 $env:GOARCH = 'amd64'
@@ -57,6 +73,15 @@ try {
 } finally { Pop-Location }
 Push-Location (Join-Path $root 'current')
 try {
+  # The reviewed strict reader first exercises the old POSIX-only host pattern.
+  # This is the exact native owner failure that the new host must resolve.
+  $env:WEKNORA_TEST_MANAGED_HOST_MODULE = $hostOld
+  $hostRed = (& go test -run '^TestManagedWindowsActualUserConfigHostLayout$' -count=1 -v . 2>&1 | Out-String)
+  $hostRedExit = $LASTEXITCODE
+  [System.IO.File]::WriteAllText((Join-Path $root 'native-host-before-red.log'), $hostRed, $utf8)
+  if ($hostRedExit -eq 0 -or $hostRed -notmatch 'strict reader rejected production-prepared key: managed worker unavailable') { throw 'Old host must reproduce the native owner rejection' }
+  $results.host_before_exit_code = $hostRedExit
+  $env:WEKNORA_TEST_MANAGED_HOST_MODULE = $hostSource
   $currentLog = (& go test -count=1 -v . 2>&1 | Out-String)
   $currentExit = $LASTEXITCODE
   [System.IO.File]::WriteAllText((Join-Path $root 'native-current.log'), $currentLog, $utf8)
@@ -68,7 +93,7 @@ try {
   $results.vet_exit_code = $LASTEXITCODE
   if ($LASTEXITCODE -ne 0) { throw 'Windows reader vet failed' }
 } finally { Pop-Location }
-$results.status = 'native_windows_reader_verified_only'
+$results.status = 'native_windows_reader_and_byte_identical_host_key_creation_verified'
 [System.IO.File]::WriteAllText((Join-Path $root 'native-result.json'), ($results | ConvertTo-Json -Depth 8) + "`n", $utf8)
 $results | ConvertTo-Json -Depth 8
 if ($env:GITHUB_OUTPUT) { ('evidence=' + $root) | Add-Content -LiteralPath $env:GITHUB_OUTPUT }
