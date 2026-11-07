@@ -378,7 +378,7 @@ func TestSurfacesTheVendorErrorBody(t *testing.T) {
 
 func TestManagedAliEmbeddingOmitsVLLMOnlyTruncation(t *testing.T) {
 	var captured map[string]any
-	client := New(Config{Endpoint: api.Endpoint{Model: "unihub-text-embedding-v4", BaseURL: "https://fixture.invalid/v1"}, Settings: api.EmbeddingsSettings{AcceptsTruncatePromptTokens: true, TruncatePromptTokens: 511}})
+	client := New(Config{Endpoint: api.Endpoint{Model: "text-embedding-v4", BaseURL: "https://fixture.invalid/v1"}, Settings: api.EmbeddingsSettings{AcceptsTruncatePromptTokens: true, TruncatePromptTokens: 511}})
 	ctx := api.WithManagedJSON(context.Background(), func(_ context.Context, _ string, _ string, body []byte) ([]byte, error) {
 		require.NoError(t, json.Unmarshal(body, &captured))
 		return json.Marshal(map[string]any{"data": []any{map[string]any{"index": 0, "embedding": make([]float32, 1024)}}})
@@ -386,11 +386,12 @@ func TestManagedAliEmbeddingOmitsVLLMOnlyTruncation(t *testing.T) {
 	_, err := client.Embed(ctx, []string{"unaltered"}, api.EmbedDocument)
 	require.NoError(t, err)
 	require.NotContains(t, captured, "truncate_prompt_tokens")
+	require.Equal(t, "text-embedding-v4", captured["model"])
 	require.Equal(t, []any{"unaltered"}, captured["input"])
 }
 
 func TestManagedEmbeddingRejectsWrongVectorDimension(t *testing.T) {
-	client := New(Config{Endpoint: api.Endpoint{Model: "unihub-text-embedding-v4", BaseURL: "https://fixture.invalid/v1"}})
+	client := New(Config{Endpoint: api.Endpoint{Model: "text-embedding-v4", BaseURL: "https://fixture.invalid/v1"}})
 	ctx := api.WithManagedJSON(context.Background(), func(_ context.Context, _ string, _ string, _ []byte) ([]byte, error) {
 		return []byte(`{"data":[{"index":0,"embedding":[0.5]}]}`), nil
 	})

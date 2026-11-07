@@ -37,7 +37,7 @@
     "knowledge_id": "11111111-1111-4111-8111-111111111111",
     "purpose": "document-ingest",
     "input_digest": "7777777777777777777777777777777777777777777777777777777777777777",
-    "embedding_model": "unihub-text-embedding-v4",
+    "embedding_model": "text-embedding-v4",
     "embedding_space": "aliyun/text-embedding-v4/v4/1024/text"
   },
   "storage": {
@@ -73,7 +73,7 @@
       "knowledge_id": "11111111-1111-4111-8111-111111111111",
       "purpose": "document-ingest",
       "input_digest": "7777777777777777777777777777777777777777777777777777777777777777",
-      "embedding_model": "unihub-text-embedding-v4",
+      "embedding_model": "text-embedding-v4",
       "embedding_space": "aliyun/text-embedding-v4/v4/1024/text"
     },
     "snapshot_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
@@ -148,7 +148,7 @@
           "knowledge_id": "11111111-1111-4111-8111-111111111111",
           "purpose": "document-ingest",
           "input_digest": "7777777777777777777777777777777777777777777777777777777777777777",
-          "embedding_model": "unihub-text-embedding-v4",
+          "embedding_model": "text-embedding-v4",
           "embedding_space": "aliyun/text-embedding-v4/v4/1024/text"
         },
         "snapshot_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
@@ -170,7 +170,7 @@
       "state": "ready",
       "issued_at": 1793318400,
       "expires_at": 1793318430,
-      "mac": "bf005aad0e9513bd9d4a4cc49f34e0163caa2cdeb28beb84a237ac1968afda80"
+      "mac": "f00a58a96d4d844e9ecef67876e1ec4d20cb4d68b091d628a627a6c99f2a9b0c"
     },
     "use": {
       "version": "completed-index-response-v1",
@@ -266,7 +266,7 @@
             "knowledge_id": "11111111-1111-4111-8111-111111111111",
             "purpose": "document-ingest",
             "input_digest": "7777777777777777777777777777777777777777777777777777777777777777",
-            "embedding_model": "unihub-text-embedding-v4",
+            "embedding_model": "text-embedding-v4",
             "embedding_space": "aliyun/text-embedding-v4/v4/1024/text"
           },
           "snapshot_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
@@ -302,7 +302,7 @@
             "knowledge_id": "11111111-1111-4111-8111-111111111111",
             "purpose": "document-ingest",
             "input_digest": "7777777777777777777777777777777777777777777777777777777777777777",
-            "embedding_model": "unihub-text-embedding-v4",
+            "embedding_model": "text-embedding-v4",
             "embedding_space": "aliyun/text-embedding-v4/v4/1024/text"
           },
           "snapshot_sha256": "9999999999999999999999999999999999999999999999999999999999999999",

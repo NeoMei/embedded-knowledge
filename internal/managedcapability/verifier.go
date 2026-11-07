@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-const EmbeddingModel = "unihub-text-embedding-v4"
+const EmbeddingModel = "text-embedding-v4"
 const EmbeddingSpace = "aliyun/text-embedding-v4/v4/1024/text"
 const EmbeddingDimensions = 1024
 
